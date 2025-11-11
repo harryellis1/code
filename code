@@ -1,0 +1,1196 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import { Play, Pause, RotateCcw, TrendingUp, TrendingDown, Activity, Wifi, Zap } from 'lucide-react';
+
+const QuantTradingSimulator = () => {
+  const [isRunning, setIsRunning] = useState(false);
+  const [useRealData, setUseRealData] = useState(false);
+  const [priceUpdateSpeed, setPriceUpdateSpeed] = useState(100);
+  const [tradingSpeed, setTradingSpeed] = useState(3000);
+  const [marketData, setMarketData] = useState([]);
+  const [trades, setTrades] = useState([]);
+  const [lastUpdate, setLastUpdate] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [portfolio, setPortfolio] = useState({
+    cash: 100000,
+    positions: {},
+    totalValue: 100000,
+    history: []
+  });
+  const [stats, setStats] = useState({
+    totalReturn: 0,
+    winRate: 0,
+    sharpeRatio: 0,
+    maxDrawdown: 0,
+    totalTrades: 0
+  });
+  const [factorExposures, setFactorExposures] = useState({
+    market: 0,
+    size: 0,
+    value: 0,
+    momentum: 0,
+    quality: 0,
+    volatility: 0
+  });
+
+  const timeStep = useRef(0);
+  const priceUpdateIntervalRef = useRef(null);
+  const tradingIntervalRef = useRef(null);
+  const indicatorCache = useRef({});
+  const realTimePrices = useRef({});
+  const marketFactor = useRef(1.0);
+
+  const STOCKS = {
+    AAPL: { sector: 'tech', beta: 1.25, marketCap: 'mega', volatility: 0.020, trend: 0.0002, meanPrice: 226 },
+    MSFT: { sector: 'tech', beta: 1.15, marketCap: 'mega', volatility: 0.018, trend: 0.00025, meanPrice: 420 },
+    NVDA: { sector: 'tech', beta: 1.75, marketCap: 'mega', volatility: 0.035, trend: 0.0005, meanPrice: 140 },
+    GOOGL: { sector: 'tech', beta: 1.05, marketCap: 'mega', volatility: 0.022, trend: 0.0003, meanPrice: 175 },
+    AMZN: { sector: 'tech', beta: 1.20, marketCap: 'mega', volatility: 0.025, trend: 0.0003, meanPrice: 215 },
+    META: { sector: 'tech', beta: 1.30, marketCap: 'mega', volatility: 0.028, trend: 0.0004, meanPrice: 580 },
+    TSLA: { sector: 'auto', beta: 2.00, marketCap: 'large', volatility: 0.040, trend: 0.0004, meanPrice: 360 },
+    JPM: { sector: 'finance', beta: 1.15, marketCap: 'large', volatility: 0.022, trend: 0.0002, meanPrice: 235 },
+    V: { sector: 'finance', beta: 0.95, marketCap: 'large', volatility: 0.018, trend: 0.00025, meanPrice: 310 },
+    WMT: { sector: 'retail', beta: 0.60, marketCap: 'large', volatility: 0.015, trend: 0.0002, meanPrice: 95 },
+    JNJ: { sector: 'healthcare', beta: 0.65, marketCap: 'large', volatility: 0.015, trend: 0.0001, meanPrice: 155 },
+    XOM: { sector: 'energy', beta: 1.00, marketCap: 'large', volatility: 0.022, trend: 0.0001, meanPrice: 115 }
+  };
+
+  const generateSimulatedPrice = (symbol, prevPrice, prevMarketData) => {
+    const config = STOCKS[symbol];
+    const dt = 1 / 252 / 6.5 / 3600; // Trading second in a year
+    
+    // Market-wide factors with more realistic correlation
+    const marketChange = (Math.random() - 0.5) * 0.012;
+    const prevMarketFactor = marketFactor.current;
+    marketFactor.current = Math.max(0.80, Math.min(1.20, marketFactor.current + marketChange));
+    
+    // Sector rotation (sectors perform differently)
+    const sectorFactors = {
+      tech: Math.random() - 0.48,
+      finance: Math.random() - 0.50,
+      auto: Math.random() - 0.52,
+      retail: Math.random() - 0.49,
+      healthcare: Math.random() - 0.48,
+      energy: Math.random() - 0.51
+    };
+    const sectorImpact = sectorFactors[config.sector] * 0.008;
+    
+    // Realistic drift with market hours consideration
+    const drift = config.trend * dt;
+    
+    // Volatility clustering (high vol follows high vol)
+    let recentVolatility = config.volatility;
+    if (prevMarketData.length >= 10) {
+      const recentReturns = [];
+      const recentPrices = prevMarketData.slice(-10).map(d => d[symbol]);
+      for (let i = 1; i < recentPrices.length; i++) {
+        recentReturns.push(Math.abs((recentPrices[i] - recentPrices[i-1]) / recentPrices[i-1]));
+      }
+      const avgRecentVol = recentReturns.reduce((a, b) => a + b, 0) / recentReturns.length;
+      recentVolatility = config.volatility * 0.3 + avgRecentVol * 0.7;
+    }
+    
+    // Fat-tailed distribution (occasional large moves)
+    const isBigMove = Math.random() < 0.05;
+    const volMultiplier = isBigMove ? (2 + Math.random() * 2) : 1;
+    
+    // Random shock with realistic distribution
+    const randomShock = recentVolatility * Math.sqrt(dt) * 
+                        (Math.random() + Math.random() + Math.random() - 1.5) * // Approximate normal
+                        volMultiplier;
+    
+    // Market correlation (beta effect)
+    const marketShock = config.beta * (marketFactor.current - prevMarketFactor) * 0.025;
+    
+    // Mean reversion to fundamental value (slower and more realistic)
+    const deviationFromMean = (prevPrice - config.meanPrice) / config.meanPrice;
+    const meanReversion = -deviationFromMean * 0.0008 * prevPrice;
+    
+    // Momentum persistence (trends continue)
+    let momentum = 0;
+    if (prevMarketData.length >= 20) {
+      const recentPrices = prevMarketData.slice(-20).map(d => d[symbol]);
+      const shortMA = recentPrices.slice(-5).reduce((a, b) => a + b) / 5;
+      const longMA = recentPrices.reduce((a, b) => a + b) / 20;
+      const trendStrength = (shortMA - longMA) / longMA;
+      momentum = trendStrength * 0.003 * prevPrice;
+    }
+    
+    // Microstructure noise (bid-ask bounce)
+    const microNoise = (Math.random() - 0.5) * prevPrice * 0.0002;
+    
+    // Order flow imbalance simulation
+    const orderFlow = (Math.random() - 0.5) * prevPrice * 0.0001;
+    
+    // Support/resistance levels (price tends to stick near round numbers)
+    const nearestRound = Math.round(prevPrice / 5) * 5;
+    const distanceFromRound = prevPrice - nearestRound;
+    const magnetEffect = -distanceFromRound * 0.001;
+    
+    // Combine all factors
+    const totalChange = 
+      prevPrice * (drift + randomShock + marketShock) + 
+      sectorImpact * prevPrice +
+      meanReversion + 
+      momentum + 
+      microNoise + 
+      orderFlow +
+      magnetEffect;
+    
+    // News/event simulation (rare jumps)
+    let newsImpact = 0;
+    if (Math.random() < 0.001) { // 0.1% chance of news event
+      newsImpact = prevPrice * (Math.random() - 0.5) * 0.05; // Up to ±5% jump
+      console.log(`📰 News event for ${symbol}: ${newsImpact > 0 ? '+' : ''}${((newsImpact/prevPrice)*100).toFixed(2)}%`);
+    }
+    
+    const newPrice = prevPrice + totalChange + newsImpact;
+    
+    // Realistic bounds (circuit breakers at ±20% from mean)
+    const lowerBound = config.meanPrice * 0.50;
+    const upperBound = config.meanPrice * 1.80;
+    
+    return Math.max(lowerBound, Math.min(upperBound, newPrice));
+  };
+
+  const fetchRealTimeStockData = async () => {
+    try {
+      const symbols = Object.keys(STOCKS).join(',');
+      const response = await fetch(
+        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`,
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0'
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch live data');
+      }
+
+      const data = await response.json();
+      
+      if (data.quoteResponse && data.quoteResponse.result) {
+        const prices = {};
+        data.quoteResponse.result.forEach(stock => {
+          if (stock.regularMarketPrice) {
+            prices[stock.symbol] = stock.regularMarketPrice;
+          }
+        });
+        
+        if (Object.keys(prices).length > 0) {
+          realTimePrices.current = prices;
+          setLastUpdate(new Date());
+          setConnectionStatus('connected');
+          return prices;
+        }
+      }
+      
+      throw new Error('No price data available');
+    } catch (error) {
+      console.error('Live data fetch failed:', error);
+      setConnectionStatus('error');
+      return null;
+    }
+  };
+
+  const calculateFactors = (currentData, historicalData) => {
+    if (historicalData.length < 20) return null;
+
+    const factors = {
+      market: 0,
+      size: 0,
+      value: 0,
+      momentum: 0,
+      quality: 0,
+      volatility: 0
+    };
+
+    const returns = [];
+    for (let i = 1; i < historicalData.length; i++) {
+      let totalReturn = 0;
+      Object.keys(STOCKS).forEach(symbol => {
+        const ret = (historicalData[i][symbol] - historicalData[i-1][symbol]) / historicalData[i-1][symbol];
+        totalReturn += ret;
+      });
+      returns.push(totalReturn / Object.keys(STOCKS).length);
+    }
+    factors.market = returns[returns.length - 1];
+
+    const largeCaps = Object.keys(STOCKS).filter(s => STOCKS[s].marketCap === 'mega');
+    const smallCaps = Object.keys(STOCKS).filter(s => STOCKS[s].marketCap === 'large');
+    
+    let largeReturn = 0, smallReturn = 0;
+    largeCaps.forEach(symbol => {
+      const ret = (currentData[symbol] - historicalData[historicalData.length - 2][symbol]) / historicalData[historicalData.length - 2][symbol];
+      largeReturn += ret;
+    });
+    smallCaps.forEach(symbol => {
+      const ret = (currentData[symbol] - historicalData[historicalData.length - 2][symbol]) / historicalData[historicalData.length - 2][symbol];
+      smallReturn += ret;
+    });
+    factors.size = (smallReturn / smallCaps.length) - (largeReturn / largeCaps.length);
+
+    Object.keys(STOCKS).forEach(symbol => {
+      if (historicalData.length >= 12) {
+        const momentum = (currentData[symbol] - historicalData[historicalData.length - 12][symbol]) / historicalData[historicalData.length - 12][symbol];
+        factors.momentum += momentum;
+      }
+    });
+    factors.momentum /= Object.keys(STOCKS).length;
+
+    Object.keys(STOCKS).forEach(symbol => {
+      const prices = historicalData.slice(-20).map(d => d[symbol]);
+      const returns = [];
+      for (let i = 1; i < prices.length; i++) {
+        returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+      }
+      const std = Math.sqrt(returns.reduce((sum, r) => sum + r * r, 0) / returns.length);
+      factors.volatility += std;
+    });
+    factors.volatility /= Object.keys(STOCKS).length;
+
+    return factors;
+  };
+
+  const calculateCointegration = (pricesA, pricesB) => {
+    const n = pricesA.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    
+    for (let i = 0; i < n; i++) {
+      sumX += pricesB[i];
+      sumY += pricesA[i];
+      sumXY += pricesB[i] * pricesA[i];
+      sumX2 += pricesB[i] * pricesB[i];
+    }
+    
+    const beta = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    const alpha = (sumY - beta * sumX) / n;
+    
+    const residuals = [];
+    for (let i = 0; i < n; i++) {
+      residuals.push(pricesA[i] - (alpha + beta * pricesB[i]));
+    }
+    
+    const mean = residuals.reduce((a, b) => a + b, 0) / n;
+    const std = Math.sqrt(residuals.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / n);
+    const zScore = (residuals[n - 1] - mean) / (std || 1);
+    
+    return { alpha, beta, zScore, residuals };
+  };
+
+  const predictReturns = (symbol, historicalData) => {
+    if (historicalData.length < 30) return 0;
+
+    const prices = historicalData.map(d => d[symbol]);
+    const features = [];
+
+    for (let i = 10; i < prices.length - 1; i++) {
+      const sma5 = prices.slice(i - 5, i).reduce((a, b) => a + b) / 5;
+      const sma10 = prices.slice(i - 10, i).reduce((a, b) => a + b) / 10;
+      const momentum = (prices[i] - prices[i - 5]) / prices[i - 5];
+      const volatility = Math.sqrt(
+        prices.slice(i - 10, i).reduce((sum, p, idx, arr) => {
+          if (idx === 0) return 0;
+          const ret = (p - arr[idx - 1]) / arr[idx - 1];
+          return sum + ret * ret;
+        }, 0) / 10
+      );
+      
+      features.push([sma5 / prices[i], sma10 / prices[i], momentum, volatility]);
+    }
+
+    const weights = [0.3, 0.2, 0.4, 0.1];
+    const lastFeature = features[features.length - 1];
+    let prediction = 0;
+    for (let i = 0; i < weights.length; i++) {
+      prediction += weights[i] * lastFeature[i] * 100;
+    }
+
+    return prediction;
+  };
+
+  const calculateEMA = (prices, period) => {
+    const k = 2 / (period + 1);
+    let ema = prices[0];
+    for (let i = 1; i < prices.length; i++) {
+      ema = prices[i] * k + ema * (1 - k);
+    }
+    return ema;
+  };
+
+  const calculateRSI = (prices, period) => {
+    let gains = 0, losses = 0;
+    for (let i = prices.length - period; i < prices.length; i++) {
+      const change = prices[i] - prices[i - 1];
+      if (change > 0) gains += change;
+      else losses -= change;
+    }
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    const rs = avgGain / (avgLoss || 0.001);
+    return 100 - (100 / (1 + rs));
+  };
+
+  const calculateIndicators = (symbol, prices) => {
+    const n = prices.length;
+    const indicators = {};
+
+    if (n >= 12) {
+      indicators.ema12 = calculateEMA(prices, 12);
+      indicators.ema26 = calculateEMA(prices, 26);
+      indicators.macd = indicators.ema12 - indicators.ema26;
+      if (n >= 35) {
+        const macdLine = prices.slice(-9).map((_, i) => {
+          const p = prices.slice(0, n - 9 + i + 1);
+          const e12 = calculateEMA(p, 12);
+          const e26 = calculateEMA(p, 26);
+          return e12 - e26;
+        });
+        indicators.macdSignal = calculateEMA(macdLine, 9);
+      }
+    }
+
+    if (n >= 14) {
+      indicators.rsi = calculateRSI(prices, 14);
+    }
+
+    if (n >= 20) {
+      const sma20 = prices.slice(-20).reduce((a, b) => a + b) / 20;
+      const std = Math.sqrt(
+        prices.slice(-20).reduce((sum, p) => sum + Math.pow(p - sma20, 2), 0) / 20
+      );
+      indicators.bb_upper = sma20 + 2 * std;
+      indicators.bb_lower = sma20 - 2 * std;
+      indicators.bb_middle = sma20;
+      indicators.bb_width = (indicators.bb_upper - indicators.bb_lower) / indicators.bb_middle;
+    }
+
+    return indicators;
+  };
+
+  const evaluateStrategies = (currentData, historicalData) => {
+    if (historicalData.length < 40) return [];
+
+    const signals = [];
+    const factors = calculateFactors(currentData, historicalData);
+    
+    if (factors) {
+      setFactorExposures(factors);
+    }
+
+    Object.keys(STOCKS).forEach(symbol => {
+      const prices = historicalData.map(d => d[symbol]);
+      const currentPrice = currentData[symbol];
+      const indicators = calculateIndicators(symbol, prices);
+      const stockConfig = STOCKS[symbol];
+
+      let buyScore = 0;
+      let sellScore = 0;
+      const strategies = [];
+
+      if (factors) {
+        const factorScore = 
+          factors.market * stockConfig.beta * 0.3 +
+          factors.momentum * 0.25 +
+          (stockConfig.marketCap === 'large' ? factors.size : -factors.size) * 0.15 +
+          -factors.volatility * 0.2;
+        
+        if (factorScore > 0.005) {
+          buyScore += 0.3;
+          strategies.push('FACTOR_LONG');
+        } else if (factorScore < -0.005) {
+          sellScore += 0.3;
+          strategies.push('FACTOR_SHORT');
+        }
+      }
+
+      const similarStocks = Object.keys(STOCKS).filter(s => 
+        s !== symbol && STOCKS[s].sector === stockConfig.sector
+      );
+      
+      if (similarStocks.length > 0 && prices.length >= 30) {
+        const pairSymbol = similarStocks[0];
+        const pairPrices = historicalData.map(d => d[pairSymbol]);
+        const { zScore } = calculateCointegration(prices, pairPrices);
+        
+        if (zScore < -1.5) {
+          buyScore += 0.35;
+          strategies.push('PAIRS_LONG');
+        } else if (zScore > 1.5) {
+          sellScore += 0.35;
+          strategies.push('PAIRS_SHORT');
+        }
+      }
+
+      if (indicators.macd !== undefined && indicators.macdSignal !== undefined) {
+        const prevPrices = prices.slice(0, -1);
+        const prevInd = calculateIndicators(symbol, prevPrices);
+        
+        if (prevInd.macd !== undefined && prevInd.macdSignal !== undefined) {
+          if (prevInd.macd <= prevInd.macdSignal && indicators.macd > indicators.macdSignal) {
+            buyScore += 0.3;
+            strategies.push('MOMENTUM_CROSS');
+          } else if (prevInd.macd >= prevInd.macdSignal && indicators.macd < indicators.macdSignal) {
+            sellScore += 0.3;
+            strategies.push('MOMENTUM_SHORT');
+          }
+        }
+      }
+
+      if (prices.length >= 12) {
+        const momentum12 = (prices[prices.length - 1] - prices[prices.length - 12]) / prices[prices.length - 12];
+        if (momentum12 > 0.03) {
+          buyScore += 0.25;
+          strategies.push('TS_MOMENTUM');
+        } else if (momentum12 < -0.03) {
+          sellScore += 0.25;
+          strategies.push('TS_MOMENTUM_SHORT');
+        }
+      }
+
+      const mlPrediction = predictReturns(symbol, historicalData);
+      if (mlPrediction > 0.3) {
+        buyScore += 0.35;
+        strategies.push('ML_PREDICTION');
+      } else if (mlPrediction < -0.3) {
+        sellScore += 0.35;
+        strategies.push('ML_SHORT');
+      }
+
+      if (indicators.rsi !== undefined) {
+        if (indicators.rsi < 35) {
+          buyScore += 0.25 * (35 - indicators.rsi) / 35;
+          strategies.push('RSI_OVERSOLD');
+        } else if (indicators.rsi > 65) {
+          sellScore += 0.25 * (indicators.rsi - 65) / 35;
+          strategies.push('RSI_OVERBOUGHT');
+        }
+      }
+
+      if (indicators.bb_width !== undefined) {
+        const isSqueezing = indicators.bb_width < 0.05;
+        
+        if (isSqueezing && currentPrice < indicators.bb_lower) {
+          buyScore += 0.25;
+          strategies.push('BB_SQUEEZE_LONG');
+        } else if (isSqueezing && currentPrice > indicators.bb_upper) {
+          sellScore += 0.25;
+          strategies.push('BB_SQUEEZE_SHORT');
+        }
+      }
+
+      const netScore = buyScore - sellScore;
+      
+      if (netScore > 0.4 && buyScore > 0.4) {
+        signals.push({
+          symbol,
+          action: 'BUY',
+          strength: Math.min(buyScore, 1.0),
+          strategies: strategies.filter(s => s.includes('LONG') || s.includes('BULL') || s.includes('OVERSOLD') || s.includes('PREDICTION') || s.includes('MOMENTUM') || s.includes('FACTOR')),
+          confidence: buyScore
+        });
+      } else if (netScore < -0.4 && sellScore > 0.4) {
+        signals.push({
+          symbol,
+          action: 'SELL',
+          strength: Math.min(sellScore, 1.0),
+          strategies: strategies.filter(s => s.includes('SHORT') || s.includes('BEAR') || s.includes('OVERBOUGHT')),
+          confidence: sellScore
+        });
+      }
+    });
+
+    return signals.sort((a, b) => b.confidence - a.confidence);
+  };
+
+  const executeTrades = (signals, currentPrices, currentPortfolio) => {
+    const newPortfolio = { ...currentPortfolio, positions: { ...currentPortfolio.positions } };
+    const newTrades = [];
+
+    const maxPositionSize = newPortfolio.totalValue * 0.18;
+    const maxTradeSize = newPortfolio.totalValue * 0.06;
+
+    signals.forEach(signal => {
+      const price = currentPrices[signal.symbol];
+      const currentShares = newPortfolio.positions[signal.symbol] || 0;
+      const currentPositionValue = currentShares * price;
+      
+      if (signal.action === 'BUY') {
+        const availableForPosition = maxPositionSize - currentPositionValue;
+        if (availableForPosition > 0 && newPortfolio.cash > price * 10) {
+          const tradeSize = Math.min(
+            maxTradeSize * signal.strength * signal.confidence,
+            availableForPosition,
+            newPortfolio.cash * 0.25
+          );
+          
+          const sharesToBuy = Math.floor(tradeSize / price);
+          
+          if (sharesToBuy > 0) {
+            const cost = sharesToBuy * price;
+            newPortfolio.cash -= cost;
+            newPortfolio.positions[signal.symbol] = currentShares + sharesToBuy;
+            
+            newTrades.push({
+              time: timeStep.current,
+              symbol: signal.symbol,
+              action: 'BUY',
+              shares: sharesToBuy,
+              price: price.toFixed(2),
+              strategies: signal.strategies.join(', '),
+              confidence: signal.confidence.toFixed(2)
+            });
+          }
+        }
+      } else if (signal.action === 'SELL' && currentShares > 0) {
+        const sharesToSell = Math.max(1, Math.floor(currentShares * signal.strength * signal.confidence * 0.4));
+        
+        if (sharesToSell > 0) {
+          const revenue = sharesToSell * price;
+          newPortfolio.cash += revenue;
+          newPortfolio.positions[signal.symbol] = currentShares - sharesToSell;
+          
+          if (newPortfolio.positions[signal.symbol] === 0) {
+            delete newPortfolio.positions[signal.symbol];
+          }
+          
+          newTrades.push({
+            time: timeStep.current,
+            symbol: signal.symbol,
+            action: 'SELL',
+            shares: sharesToSell,
+            price: price.toFixed(2),
+            strategies: signal.strategies.join(', '),
+            confidence: signal.confidence.toFixed(2)
+          });
+        }
+      }
+    });
+
+    return { newPortfolio, newTrades };
+  };
+
+  const calculateStats = (portfolioHistory, allTrades) => {
+    if (portfolioHistory.length < 2) {
+      return {
+        totalReturn: 0,
+        winRate: 0,
+        sharpeRatio: 0,
+        maxDrawdown: 0,
+        totalTrades: 0
+      };
+    }
+
+    const returns = [];
+    let maxValue = 100000;
+    let maxDrawdown = 0;
+
+    for (let i = 1; i < portfolioHistory.length; i++) {
+      const dailyReturn = (portfolioHistory[i] - portfolioHistory[i - 1]) / portfolioHistory[i - 1];
+      returns.push(dailyReturn);
+      
+      if (portfolioHistory[i] > maxValue) {
+        maxValue = portfolioHistory[i];
+      }
+      const drawdown = ((portfolioHistory[i] - maxValue) / maxValue) * 100;
+      if (drawdown < maxDrawdown) {
+        maxDrawdown = drawdown;
+      }
+    }
+
+    const totalReturn = ((portfolioHistory[portfolioHistory.length - 1] - 100000) / 100000) * 100;
+    
+    const winningTrades = allTrades.filter((t, idx) => {
+      if (t.action === 'SELL' && idx > 0) {
+        const buyTrade = allTrades.slice(0, idx).reverse().find(
+          bt => bt.symbol === t.symbol && bt.action === 'BUY'
+        );
+        if (buyTrade) {
+          return parseFloat(t.price) > parseFloat(buyTrade.price);
+        }
+      }
+      return false;
+    }).length;
+    
+    const totalSells = allTrades.filter(t => t.action === 'SELL').length;
+    const winRate = totalSells > 0 ? (winningTrades / totalSells) * 100 : 0;
+
+    const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+    const stdReturn = returns.length > 0 ? Math.sqrt(
+      returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length
+    ) : 1;
+    const sharpeRatio = stdReturn > 0 ? (avgReturn / stdReturn) * Math.sqrt(252) : 0;
+
+    return {
+      totalReturn: totalReturn.toFixed(2),
+      winRate: winRate.toFixed(1),
+      sharpeRatio: sharpeRatio.toFixed(2),
+      maxDrawdown: maxDrawdown.toFixed(2),
+      totalTrades: allTrades.length
+    };
+  };
+
+  const initializeMarket = async () => {
+    const initial = { time: 0 };
+    
+    if (useRealData) {
+      setConnectionStatus('connecting');
+      const livePricesData = await fetchRealTimeStockData();
+      if (livePricesData) {
+        Object.keys(STOCKS).forEach(symbol => {
+          initial[symbol] = livePricesData[symbol];
+        });
+      } else {
+        Object.keys(STOCKS).forEach(symbol => {
+          initial[symbol] = STOCKS[symbol].meanPrice;
+        });
+      }
+    } else {
+      setConnectionStatus('simulated');
+      Object.keys(STOCKS).forEach(symbol => {
+        initial[symbol] = STOCKS[symbol].meanPrice;
+      });
+    }
+    
+    setMarketData([initial]);
+    setTrades([]);
+    setPortfolio({
+      cash: 100000,
+      positions: {},
+      totalValue: 100000,
+      history: [100000]
+    });
+    setStats({
+      totalReturn: 0,
+      winRate: 0,
+      sharpeRatio: 0,
+      maxDrawdown: 0,
+      totalTrades: 0
+    });
+    timeStep.current = 0;
+    indicatorCache.current = {};
+    marketFactor.current = 1.0;
+  };
+
+  const updatePrices = async () => {
+    if (useRealData) {
+      const newPrices = await fetchRealTimeStockData();
+      if (newPrices && Object.keys(newPrices).length > 0) {
+        setMarketData(prevData => {
+          const newData = { time: timeStep.current + 1, ...newPrices };
+          const allData = [...prevData, newData].slice(-300);
+          timeStep.current++;
+          
+          setPortfolio(prevPortfolio => {
+            let totalValue = prevPortfolio.cash;
+            Object.keys(prevPortfolio.positions).forEach(symbol => {
+              totalValue += prevPortfolio.positions[symbol] * newPrices[symbol];
+            });
+            const updatedHistory = [...prevPortfolio.history, totalValue].slice(-500);
+            
+            return {
+              ...prevPortfolio,
+              totalValue,
+              history: updatedHistory
+            };
+          });
+          
+          return allData;
+        });
+      }
+    } else {
+      setMarketData(prevData => {
+        if (prevData.length === 0) return prevData;
+        
+        const lastData = prevData[prevData.length - 1];
+        const newData = { time: timeStep.current + 1 };
+        
+        Object.keys(STOCKS).forEach(symbol => {
+          newData[symbol] = generateSimulatedPrice(symbol, lastData[symbol], prevData);
+        });
+        
+        const allData = [...prevData, newData].slice(-300);
+        timeStep.current++;
+        
+        setPortfolio(prevPortfolio => {
+          let totalValue = prevPortfolio.cash;
+          Object.keys(prevPortfolio.positions).forEach(symbol => {
+            totalValue += prevPortfolio.positions[symbol] * newData[symbol];
+          });
+          const updatedHistory = [...prevPortfolio.history, totalValue].slice(-500);
+          
+          return {
+            ...prevPortfolio,
+            totalValue,
+            history: updatedHistory
+          };
+        });
+        
+        return allData;
+      });
+    }
+  };
+
+  const executeTradingLogic = () => {
+    setMarketData(currentMarketData => {
+      if (currentMarketData.length < 40) return currentMarketData;
+
+      const currentData = currentMarketData[currentMarketData.length - 1];
+      const signals = evaluateStrategies(currentData, currentMarketData);
+      
+      console.log('Signals generated:', signals.length);
+      
+      setPortfolio(prevPortfolio => {
+        const { newPortfolio, newTrades } = executeTrades(signals, currentData, prevPortfolio);
+        
+        let totalValue = newPortfolio.cash;
+        Object.keys(newPortfolio.positions).forEach(symbol => {
+          totalValue += newPortfolio.positions[symbol] * currentData[symbol];
+        });
+        newPortfolio.totalValue = totalValue;
+        newPortfolio.history = [...prevPortfolio.history, totalValue].slice(-500);
+
+        if (newTrades.length > 0) {
+          console.log('New trades executed:', newTrades.length);
+          setTrades(prev => {
+            const updatedTrades = [...prev, ...newTrades];
+            setStats(calculateStats(newPortfolio.history, updatedTrades));
+            return updatedTrades;
+          });
+        }
+
+        return newPortfolio;
+      });
+      
+      return currentMarketData;
+    });
+  };
+
+  useEffect(() => {
+    initializeMarket();
+  }, []);
+
+  useEffect(() => {
+    if (priceUpdateIntervalRef.current) clearInterval(priceUpdateIntervalRef.current);
+    if (tradingIntervalRef.current) clearInterval(tradingIntervalRef.current);
+    
+    if (isRunning) {
+      const priceInterval = useRealData ? 5000 : priceUpdateSpeed;
+      const tradeInterval = useRealData ? 15000 : tradingSpeed;
+      
+      priceUpdateIntervalRef.current = setInterval(updatePrices, priceInterval);
+      tradingIntervalRef.current = setInterval(executeTradingLogic, tradeInterval);
+      
+      updatePrices();
+      setTimeout(executeTradingLogic, 2000);
+    }
+    
+    return () => {
+      if (priceUpdateIntervalRef.current) clearInterval(priceUpdateIntervalRef.current);
+      if (tradingIntervalRef.current) clearInterval(tradingIntervalRef.current);
+    };
+  }, [isRunning, useRealData, priceUpdateSpeed, tradingSpeed]);
+
+  const reset = () => {
+    setIsRunning(false);
+    setTimeout(() => initializeMarket(), 100);
+  };
+
+  const toggleDataMode = () => {
+    setIsRunning(false);
+    setUseRealData(!useRealData);
+    setTimeout(() => initializeMarket(), 100);
+  };
+
+  const factorData = [
+    { name: 'Market', value: (factorExposures.market || 0) * 100 },
+    { name: 'Size', value: (factorExposures.size || 0) * 100 },
+    { name: 'Value', value: (factorExposures.value || 0) * 100 },
+    { name: 'Momentum', value: (factorExposures.momentum || 0) * 100 },
+    { name: 'Quality', value: (factorExposures.quality || 0) * 100 },
+    { name: 'Volatility', value: (factorExposures.volatility || 0) * 100 }
+  ];
+
+  return (
+    <div className="w-full min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6 overflow-auto">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+              Advanced Quant Trading System
+            </h1>
+            <p className="text-slate-400 text-sm mt-1 flex items-center gap-2">
+              {useRealData ? 'Real-time market data' : 'Simulated market data'} • Multi-factor models • ML predictions • Statistical arbitrage
+              {lastUpdate && useRealData && (
+                <span className="text-green-400 flex items-center gap-1">
+                  <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></div>
+                  {lastUpdate.toLocaleTimeString()}
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={toggleDataMode}
+              className={`flex items-center gap-2 px-4 py-3 rounded-lg transition shadow-lg ${
+                useRealData 
+                  ? 'bg-green-600 hover:bg-green-700' 
+                  : 'bg-blue-600 hover:bg-blue-700'
+              }`}
+            >
+              {useRealData ? <Wifi size={20} /> : <Activity size={20} />}
+              {useRealData ? 'Real Data' : 'Simulated'}
+            </button>
+            <button
+              onClick={() => setIsRunning(!isRunning)}
+              className={`flex items-center gap-2 px-6 py-3 rounded-lg transition shadow-lg ${
+                isRunning 
+                  ? 'bg-red-600 hover:bg-red-700' 
+                  : 'bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800'
+              }`}
+            >
+              {isRunning ? <Pause size={20} /> : <Play size={20} />}
+              {isRunning ? 'Pause Trading' : 'Start Trading'}
+            </button>
+            <button
+              onClick={reset}
+              className="flex items-center gap-2 px-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg transition"
+            >
+              <RotateCcw size={20} />
+              Reset
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4">
+          <div className="col-span-2 bg-slate-800/50 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <Zap className="text-yellow-400" size={20} />
+              <div className="flex-1">
+                <div className="text-sm font-medium mb-1">System Status</div>
+                <div className="text-xs text-slate-400">
+                  {useRealData 
+                    ? 'Prices update every 5 seconds • Trading executes every 15 seconds' 
+                    : `Prices update every ${priceUpdateSpeed}ms • Trading executes every ${tradingSpeed}ms`}
+                </div>
+              </div>
+              <div className={`px-4 py-2 rounded-full text-sm font-semibold ${
+                connectionStatus === 'connected' ? 'bg-green-900/50 text-green-300' :
+                connectionStatus === 'simulated' ? 'bg-blue-900/50 text-blue-300' :
+                connectionStatus === 'connecting' ? 'bg-yellow-900/50 text-yellow-300' :
+                'bg-red-900/50 text-red-300'
+              }`}>
+                {connectionStatus === 'connected' ? '● Live' : 
+                 connectionStatus === 'simulated' ? '● Simulated' :
+                 connectionStatus === 'connecting' ? '○ Connecting' : '✕ Error'}
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-r from-purple-900/50 to-blue-900/50 p-4 rounded-lg">
+            <div className="text-sm text-slate-300 mb-1">Active Models</div>
+            <div className="text-lg font-bold">6 Advanced Strategies</div>
+            <div className="text-xs text-slate-400 mt-1">Factor • Pairs • Momentum • ML • Mean Rev • BB</div>
+          </div>
+        </div>
+
+        {!useRealData && (
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-slate-800/50 p-4 rounded-lg">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium">Price Update Speed</label>
+                <span className="text-sm text-slate-400">{priceUpdateSpeed}ms</span>
+              </div>
+              <input
+                type="range"
+                min="50"
+                max="2000"
+                step="50"
+                value={priceUpdateSpeed}
+                onChange={(e) => setPriceUpdateSpeed(Number(e.target.value))}
+                className="w-full"
+                disabled={isRunning}
+              />
+              <div className="text-xs text-slate-500 mt-1">
+                {isRunning ? 'Stop trading to adjust' : 'How often prices update'}
+              </div>
+            </div>
+
+            <div className="bg-slate-800/50 p-4 rounded-lg">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium">Trading Execution Speed</label>
+                <span className="text-sm text-slate-400">{(tradingSpeed / 1000).toFixed(1)}s</span>
+              </div>
+              <input
+                type="range"
+                min="1000"
+                max="30000"
+                step="1000"
+                value={tradingSpeed}
+                onChange={(e) => setTradingSpeed(Number(e.target.value))}
+                className="w-full"
+                disabled={isRunning}
+              />
+              <div className="text-xs text-slate-500 mt-1">
+                {isRunning ? 'Stop trading to adjust' : 'Time between trade evaluations'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-5 gap-4">
+          <div className="bg-gradient-to-br from-slate-800 to-slate-700 p-5 rounded-xl shadow-xl border border-slate-700">
+            <div className="text-sm text-slate-400 mb-1">Portfolio Value</div>
+            <div className="text-3xl font-bold text-white">${portfolio.totalValue.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+          </div>
+          <div className="bg-gradient-to-br from-slate-800 to-slate-700 p-5 rounded-xl shadow-xl border border-slate-700">
+            <div className="text-sm text-slate-400 mb-1">Total Return</div>
+            <div className={`text-3xl font-bold ${parseFloat(stats.totalReturn) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {parseFloat(stats.totalReturn) >= 0 ? '+' : ''}{stats.totalReturn}%
+            </div>
+          </div>
+          <div className="bg-gradient-to-br from-slate-800 to-slate-700 p-5 rounded-xl shadow-xl border border-slate-700">
+            <div className="text-sm text-slate-400 mb-1">Cash Available</div>
+            <div className="text-3xl font-bold text-white">${portfolio.cash.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+          </div>
+          <div className="bg-gradient-to-br from-slate-800 to-slate-700 p-5 rounded-xl shadow-xl border border-slate-700">
+            <div className="text-sm text-slate-400 mb-1">Sharpe Ratio</div>
+            <div className="text-3xl font-bold text-blue-400">{stats.sharpeRatio}</div>
+          </div>
+          <div className="bg-gradient-to-br from-slate-800 to-slate-700 p-5 rounded-xl shadow-xl border border-slate-700">
+            <div className="text-sm text-slate-400 mb-1">Win Rate</div>
+            <div className="text-3xl font-bold text-purple-400">{stats.winRate}%</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4">
+          <div className="col-span-2 bg-slate-800/70 backdrop-blur p-6 rounded-xl shadow-xl border border-slate-700">
+            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+              <TrendingUp className="text-green-400" size={24} />
+              {useRealData ? 'Real-Time' : 'Simulated'} Market Prices
+            </h2>
+            <ResponsiveContainer width="100%" height={350}>
+              <LineChart data={marketData.slice(-60)}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="time" stroke="#94a3b8" />
+                <YAxis stroke="#94a3b8" />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }}
+                  formatter={(value) => `${value.toFixed(2)}`}
+                />
+                <Legend />
+                <Line type="monotone" dataKey="AAPL" stroke="#3b82f6" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="MSFT" stroke="#10b981" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="NVDA" stroke="#f59e0b" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="GOOGL" stroke="#8b5cf6" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="TSLA" stroke="#ef4444" dot={false} strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="bg-slate-800/70 backdrop-blur p-6 rounded-xl shadow-xl border border-slate-700">
+            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+              <Activity className="text-purple-400" size={24} />
+              Factor Exposures
+            </h2>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={factorData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="name" stroke="#94a3b8" angle={-45} textAnchor="end" height={80} />
+                <YAxis stroke="#94a3b8" />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }}
+                  formatter={(value) => `${value.toFixed(2)}%`}
+                />
+                <Bar dataKey="value" fill="#8b5cf6" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-slate-800/70 backdrop-blur p-6 rounded-xl shadow-xl border border-slate-700">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            <Activity className="text-blue-400" size={24} />
+            Portfolio Value Over Time
+          </h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={portfolio.history.map((val, idx) => ({ time: idx, value: val }))}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="time" stroke="#94a3b8" />
+              <YAxis stroke="#94a3b8" domain={['auto', 'auto']} />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }}
+                formatter={(value) => `${value.toLocaleString(undefined, {maximumFractionDigits: 2})}`}
+              />
+              <Line type="monotone" dataKey="value" stroke="#8b5cf6" dot={false} strokeWidth={3} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-slate-800/70 backdrop-blur p-6 rounded-xl shadow-xl border border-slate-700">
+            <h2 className="text-xl font-semibold mb-4">Current Positions</h2>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {Object.keys(STOCKS).map(symbol => {
+                const shares = portfolio.positions[symbol] || 0;
+                const price = marketData.length > 0 ? marketData[marketData.length - 1][symbol] : 0;
+                const value = shares * price;
+                const percentOfPortfolio = portfolio.totalValue > 0 ? (value / portfolio.totalValue) * 100 : 0;
+                
+                return (
+                  <div key={symbol} className={`flex justify-between items-center p-4 rounded-lg transition-all ${shares > 0 ? 'bg-gradient-to-r from-slate-700/80 to-slate-600/50' : 'bg-slate-700/30'}`}>
+                    <div>
+                      <div className="font-bold text-lg flex items-center gap-2">
+                        {symbol}
+                        <span className="text-xs bg-slate-600 px-2 py-1 rounded">{STOCKS[symbol].sector}</span>
+                      </div>
+                      <div className="text-sm text-slate-400">
+                        {shares > 0 ? `${shares} shares @ ${price.toFixed(2)}` : 'No position'}
+                      </div>
+                    </div>
+                    {shares > 0 && (
+                      <div className="text-right">
+                        <div className="font-bold text-lg">${value.toFixed(2)}</div>
+                        <div className="text-sm text-slate-400">{percentOfPortfolio.toFixed(1)}%</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="bg-slate-800/70 backdrop-blur p-6 rounded-xl shadow-xl border border-slate-700">
+            <h2 className="text-xl font-semibold mb-4">Recent Trades ({stats.totalTrades} total)</h2>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {trades.slice().reverse().slice(0, 20).map((trade, idx) => (
+                <div key={idx} className="flex justify-between items-center p-3 bg-slate-700/50 rounded-lg text-sm hover:bg-slate-700 transition-all">
+                  <div className="flex items-center gap-3">
+                    {trade.action === 'BUY' ? (
+                      <TrendingUp className="text-green-400 flex-shrink-0" size={18} />
+                    ) : (
+                      <TrendingDown className="text-red-400 flex-shrink-0" size={18} />
+                    )}
+                    <div>
+                      <div className="font-semibold text-base">{trade.symbol}</div>
+                      <div className="text-xs text-slate-400">{trade.strategies}</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className={`font-semibold ${trade.action === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>
+                      {trade.action} {trade.shares}
+                    </div>
+                    <div className="text-xs text-slate-400">@${trade.price} • {trade.confidence}</div>
+                  </div>
+                </div>
+              ))}
+              {trades.length === 0 && (
+                <div className="text-center text-slate-400 py-8">
+                  No trades executed yet. Start the system to begin trading.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-slate-800/70 backdrop-blur p-6 rounded-xl shadow-xl border border-slate-700">
+          <h2 className="text-xl font-semibold mb-3">Advanced Trading Models</h2>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-gradient-to-br from-blue-900/30 to-blue-800/20 p-4 rounded-lg border border-blue-700/30">
+              <h3 className="font-semibold text-blue-400 mb-2 flex items-center gap-2">
+                <Zap size={16} />
+                Multi-Factor Model
+              </h3>
+              <p className="text-sm text-slate-300">Fama-French inspired model analyzing market, size, value, momentum, quality, and volatility factors</p>
+            </div>
+            <div className="bg-gradient-to-br from-purple-900/30 to-purple-800/20 p-4 rounded-lg border border-purple-700/30">
+              <h3 className="font-semibold text-purple-400 mb-2 flex items-center gap-2">
+                <Activity size={16} />
+                Statistical Arbitrage
+              </h3>
+              <p className="text-sm text-slate-300">Pairs trading using cointegration analysis with z-score thresholds to exploit mean-reverting spreads</p>
+            </div>
+            <div className="bg-gradient-to-br from-green-900/30 to-green-800/20 p-4 rounded-lg border border-green-700/30">
+              <h3 className="font-semibold text-green-400 mb-2 flex items-center gap-2">
+                <TrendingUp size={16} />
+                Momentum & Trend
+              </h3>
+              <p className="text-sm text-slate-300">12-month time-series momentum with MACD crossovers for trend identification</p>
+            </div>
+            <div className="bg-gradient-to-br from-yellow-900/30 to-yellow-800/20 p-4 rounded-lg border border-yellow-700/30">
+              <h3 className="font-semibold text-yellow-400 mb-2 flex items-center gap-2">
+                <Zap size={16} />
+                Machine Learning
+              </h3>
+              <p className="text-sm text-slate-300">Gradient boosting-inspired prediction using engineered features: SMA ratios, momentum, volatility</p>
+            </div>
+            <div className="bg-gradient-to-br from-red-900/30 to-red-800/20 p-4 rounded-lg border border-red-700/30">
+              <h3 className="font-semibold text-red-400 mb-2 flex items-center gap-2">
+                <Activity size={16} />
+                Mean Reversion (RSI)
+              </h3>
+              <p className="text-sm text-slate-300">RSI-based contrarian strategy targeting oversold and overbought conditions with dynamic sizing</p>
+            </div>
+            <div className="bg-gradient-to-br from-cyan-900/30 to-cyan-800/20 p-4 rounded-lg border border-cyan-700/30">
+              <h3 className="font-semibold text-cyan-400 mb-2 flex items-center gap-2">
+                <TrendingDown size={16} />
+                Bollinger Squeeze
+              </h3>
+              <p className="text-sm text-slate-300">Volatility breakout strategy detecting band compression for high-probability directional moves</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-slate-800/70 backdrop-blur p-6 rounded-xl shadow-xl border border-slate-700">
+          <h2 className="text-xl font-semibold mb-3">Performance Metrics</h2>
+          <div className="grid grid-cols-4 gap-4">
+            <div className="bg-gradient-to-br from-red-900/30 to-red-800/20 p-4 rounded-lg border border-red-700/30">
+              <div className="text-sm text-slate-400 mb-1">Max Drawdown</div>
+              <div className="text-2xl font-bold text-red-400">{stats.maxDrawdown}%</div>
+              <div className="text-xs text-slate-500 mt-1">Risk metric</div>
+            </div>
+            <div className="bg-gradient-to-br from-blue-900/30 to-blue-800/20 p-4 rounded-lg border border-blue-700/30">
+              <div className="text-sm text-slate-400 mb-1">Total Trades</div>
+              <div className="text-2xl font-bold text-white">{stats.totalTrades}</div>
+              <div className="text-xs text-slate-500 mt-1">Execution count</div>
+            </div>
+            <div className="bg-gradient-to-br from-purple-900/30 to-purple-800/20 p-4 rounded-lg border border-purple-700/30">
+              <div className="text-sm text-slate-400 mb-1">Invested Capital</div>
+              <div className="text-2xl font-bold text-white">
+                ${(portfolio.totalValue - portfolio.cash).toLocaleString(undefined, {maximumFractionDigits: 0})}
+              </div>
+              <div className="text-xs text-slate-500 mt-1">Market exposure</div>
+            </div>
+            <div className="bg-gradient-to-br from-green-900/30 to-green-800/20 p-4 rounded-lg border border-green-700/30">
+              <div className="text-sm text-slate-400 mb-1">Active Positions</div>
+              <div className="text-2xl font-bold text-white">
+                {Object.values(portfolio.positions).filter(shares => shares > 0).length} / {Object.keys(STOCKS).length}
+              </div>
+              <div className="text-xs text-slate-500 mt-1">Portfolio diversity</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gradient-to-r from-blue-900/20 via-purple-900/20 to-pink-900/20 border border-blue-500/30 p-5 rounded-lg">
+          <h3 className="font-semibold text-blue-400 mb-2 flex items-center gap-2">
+            {useRealData ? <Wifi size={18} /> : <Activity size={18} />}
+            {useRealData ? 'Real-Time Trading System' : 'Simulated Trading System'}
+          </h3>
+          <p className="text-sm text-slate-300 mb-3">
+            {useRealData 
+              ? 'This system uses live market data from Yahoo Finance API, updating prices every 5 seconds. The bot executes trades every 15 seconds using 6 advanced quantitative models.'
+              : 'This system uses realistic simulated market data with accurate price movements. Prices update every 100ms and the bot executes trades every 3 seconds using 6 advanced quantitative models.'
+            }
+          </p>
+          <p className="text-xs text-slate-400 mt-3">
+            Toggle between "Real Data" and "Simulated" modes using the button above. Trade volume is dynamically adjusted based on model confidence scores.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default QuantTradingSimulator; 
