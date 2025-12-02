@@ -96,45 +96,49 @@ const QuantTradingSimulator = () => {
 
   const calculateRSI = useCallback((prices) => {
     if (prices.length < 14) return 50;
-    let gains = 0;
-    let losses = 0;
-    for (let i = prices.length - 14; i < prices.length; i++) {
+    let gains = 0, losses = 0;
+    const len = prices.length;
+    for (let i = len - 14; i < len; i++) {
       const change = prices[i] - prices[i - 1];
       if (change > 0) gains += change;
       else losses -= change;
     }
     const avgGain = gains / 14;
     const avgLoss = losses / 14;
-    const rs = avgGain / (avgLoss || 0.001);
-    return 100 - (100 / (1 + rs));
+    return avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
   }, []);
 
   const detectMarketCondition = useCallback((historicalData) => {
-    if (historicalData.length < 30) return { condition: 'Normal', regime: 'Normal', confidence: 50 };
+    const len = historicalData.length;
+    if (len < 30) return { condition: 'Normal', regime: 'Normal', confidence: 50 };
     
     const recentPrices = historicalData.slice(-30);
-    let totalChange = 0;
-    let volatilitySum = 0;
+    let totalChange = 0, volatilitySum = 0;
     const symbols = Object.keys(STOCKS);
+    const symLen = symbols.length;
     
-    symbols.forEach(symbol => {
-      const prices = recentPrices.map(d => d[symbol]);
-      const change = (prices[prices.length - 1] - prices[0]) / prices[0];
+    for (let s = 0; s < symLen; s++) {
+      const symbol = symbols[s];
+      const prices = new Array(30);
+      for (let i = 0; i < 30; i++) {
+        prices[i] = recentPrices[i][symbol];
+      }
+      
+      const change = (prices[29] - prices[0]) / prices[0];
       totalChange += change;
       
-      const returns = [];
-      for (let i = 1; i < prices.length; i++) {
-        returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+      let varianceSum = 0;
+      for (let i = 1; i < 30; i++) {
+        const ret = (prices[i] - prices[i-1]) / prices[i-1];
+        varianceSum += ret * ret;
       }
-      const variance = returns.reduce((s, r) => s + r * r, 0) / returns.length;
-      volatilitySum += Math.sqrt(variance);
-    });
+      volatilitySum += Math.sqrt(varianceSum / 30);
+    }
     
-    const avgChange = totalChange / symbols.length;
-    const avgVolatility = volatilitySum / symbols.length;
+    const avgChange = totalChange / symLen;
+    const avgVolatility = volatilitySum / symLen;
     
-    let condition = 'Normal';
-    let regime = 'Normal';
+    let condition = 'Normal', regime = 'Normal';
     
     if (avgChange < -0.10 && avgVolatility > 0.025) {
       condition = 'Severe Crash';
@@ -219,12 +223,18 @@ const QuantTradingSimulator = () => {
 
           setPortfolio(prevPortfolio => {
             let totalValue = prevPortfolio.cash;
-            Object.keys(prevPortfolio.positions).forEach(symbol => {
-              if (newData[symbol]) totalValue += prevPortfolio.positions[symbol] * newData[symbol];
-            });
-            Object.keys(prevPortfolio.shorts).forEach(symbol => {
-              if (newData[symbol]) totalValue -= prevPortfolio.shorts[symbol] * newData[symbol];
-            });
+            const posKeys = Object.keys(prevPortfolio.positions);
+            const posLen = posKeys.length;
+            for (let i = 0; i < posLen; i++) {
+              const sym = posKeys[i];
+              if (newData[sym]) totalValue += prevPortfolio.positions[sym] * newData[sym];
+            }
+            const shortKeys = Object.keys(prevPortfolio.shorts);
+            const shortLen = shortKeys.length;
+            for (let i = 0; i < shortLen; i++) {
+              const sym = shortKeys[i];
+              if (newData[sym]) totalValue -= prevPortfolio.shorts[sym] * newData[sym];
+            }
             return {
               ...prevPortfolio,
               totalValue,
@@ -252,33 +262,41 @@ const QuantTradingSimulator = () => {
             activeSymbols.forEach(symbol => {
               if (!STOCKS[symbol] || !newData[symbol]) return;
               const prices = prevData.map(d => d[symbol]).filter(p => p !== undefined);
-              if (prices.length < 20) return;
+              const len = prices.length;
+              if (len < 20) return;
               
-              const currentPrice = prices[prices.length - 1];
+              const currentPrice = prices[len - 1];
               const rsi = calculateRSI(prices);
               
-              // Moving averages
-              const ma5 = prices.slice(-5).reduce((a,b) => a+b, 0) / 5;
-              const ma10 = prices.slice(-10).reduce((a,b) => a+b, 0) / 10;
-              const ma20 = prices.slice(-20).reduce((a,b) => a+b, 0) / 20;
+              // Pre-compute moving averages
+              let sum5 = 0, sum10 = 0, sum20 = 0;
+              for (let i = len - 5; i < len; i++) sum5 += prices[i];
+              for (let i = len - 10; i < len; i++) sum10 += prices[i];
+              for (let i = len - 20; i < len; i++) sum20 += prices[i];
+              const ma5 = sum5 / 5;
+              const ma10 = sum10 / 10;
+              const ma20 = sum20 / 20;
               
               // Momentum
-              const momentum5 = (currentPrice - prices[prices.length - 5]) / prices[prices.length - 5];
-              const momentum10 = (currentPrice - prices[prices.length - 10]) / prices[prices.length - 10];
+              const momentum5 = (currentPrice - prices[len - 5]) / prices[len - 5];
+              const momentum10 = (currentPrice - prices[len - 10]) / prices[len - 10];
               
               // Volatility
-              const returns = [];
-              for (let i = 1; i < Math.min(20, prices.length); i++) {
-                returns.push((prices[prices.length - i] - prices[prices.length - i - 1]) / prices[prices.length - i - 1]);
+              let varSum = 0;
+              for (let i = len - 20; i < len - 1; i++) {
+                const ret = (prices[i + 1] - prices[i]) / prices[i];
+                varSum += ret * ret;
               }
-              const volatility = Math.sqrt(returns.reduce((s, r) => s + r * r, 0) / returns.length);
+              const volatility = Math.sqrt(varSum / 19);
               
-              // Z-score for mean reversion
-              const mean = prices.slice(-30).reduce((a,b) => a+b, 0) / Math.min(30, prices.length);
-              const std = Math.sqrt(prices.slice(-30).reduce((s, p) => s + (p - mean) ** 2, 0) / Math.min(30, prices.length));
+              // Z-score
+              const slice30 = prices.slice(-30);
+              const mean = slice30.reduce((a, b) => a + b, 0) / slice30.length;
+              const variance = slice30.reduce((s, p) => s + (p - mean) ** 2, 0) / slice30.length;
+              const std = Math.sqrt(variance);
               const zScore = (currentPrice - mean) / std;
               
-              // Trend strength
+              // Trend flags
               const trendUp = ma5 > ma10 && ma10 > ma20;
               const trendDown = ma5 < ma10 && ma10 < ma20;
               
@@ -457,13 +475,20 @@ const QuantTradingSimulator = () => {
               }
             });
             
-            const newPortfolio = { ...prevPortfolio, positions: { ...prevPortfolio.positions }, shorts: { ...prevPortfolio.shorts }, entryPrices: { ...prevPortfolio.entryPrices } };
+            const newPortfolio = { 
+              ...prevPortfolio, 
+              positions: { ...prevPortfolio.positions }, 
+              shorts: { ...prevPortfolio.shorts }, 
+              entryPrices: { ...prevPortfolio.entryPrices } 
+            };
             const newTrades = [];
             const availableCash = Math.max(0, newPortfolio.cash - reserveAmount);
             
-            signals.forEach(signal => {
+            const signalsLen = signals.length;
+            for (let i = 0; i < signalsLen; i++) {
+              const signal = signals[i];
               const price = newData[signal.symbol];
-              if (!price) return;
+              if (!price) continue;
               
               if (signal.action === 'BUY' && availableCash > price * 5) {
                 const baseSize = Math.min(availableCash * (investmentPercent / 100), availableCash * 0.25);
@@ -506,12 +531,18 @@ const QuantTradingSimulator = () => {
             });
             
             let totalValue = newPortfolio.cash;
-            Object.keys(newPortfolio.positions).forEach(symbol => {
-              if (newData[symbol]) totalValue += newPortfolio.positions[symbol] * newData[symbol];
-            });
-            Object.keys(newPortfolio.shorts).forEach(symbol => {
-              if (newData[symbol]) totalValue -= newPortfolio.shorts[symbol] * newData[symbol];
-            });
+            const posKeys = Object.keys(newPortfolio.positions);
+            const posLen = posKeys.length;
+            for (let i = 0; i < posLen; i++) {
+              const sym = posKeys[i];
+              if (newData[sym]) totalValue += newPortfolio.positions[sym] * newData[sym];
+            }
+            const shortKeys = Object.keys(newPortfolio.shorts);
+            const shortLen = shortKeys.length;
+            for (let i = 0; i < shortLen; i++) {
+              const sym = shortKeys[i];
+              if (newData[sym]) totalValue -= newPortfolio.shorts[sym] * newData[sym];
+            }
             
             const peakValue = Math.max(prevPortfolio.peakValue || startingCapital, totalValue);
             
@@ -565,6 +596,71 @@ const QuantTradingSimulator = () => {
     });
   };
 
+  const applyProfile = (profile) => {
+    switch(profile) {
+      case 'conservative':
+        setRiskTolerance(60);
+        setTradingFrequency(500);
+        setInvestmentPercent(5);
+        setReserveAmount(30000);
+        setStopLossPercent(7);
+        break;
+      case 'balanced':
+        setRiskTolerance(70);
+        setTradingFrequency(100);
+        setInvestmentPercent(10);
+        setReserveAmount(15000);
+        setStopLossPercent(5);
+        break;
+      case 'aggressive':
+        setRiskTolerance(80);
+        setTradingFrequency(25);
+        setInvestmentPercent(20);
+        setReserveAmount(5000);
+        setStopLossPercent(4);
+        break;
+      case 'hft':
+        setRiskTolerance(85);
+        setTradingFrequency(1);
+        setInvestmentPercent(15);
+        setReserveAmount(10000);
+        setStopLossPercent(3);
+        break;
+      case 'daytrader':
+        setRiskTolerance(75);
+        setTradingFrequency(50);
+        setInvestmentPercent(12);
+        setReserveAmount(10000);
+        setStopLossPercent(4);
+        break;
+      case 'scalper':
+        setRiskTolerance(90);
+        setTradingFrequency(5);
+        setInvestmentPercent(25);
+        setReserveAmount(5000);
+        setStopLossPercent(2);
+        break;
+      case 'swingtrader':
+        setRiskTolerance(65);
+        setTradingFrequency(1000);
+        setInvestmentPercent(15);
+        setReserveAmount(20000);
+        setStopLossPercent(8);
+        break;
+      case 'whale':
+        setRiskTolerance(75);
+        setTradingFrequency(10);
+        setInvestmentPercent(8);
+        setReserveAmount(50000);
+        setStopLossPercent(5);
+        setStartingCapital(100000000);
+        break;
+      default:
+        break;
+    }
+    setShowProfileModal(false);
+  };
+
   return (
     <div className="w-full min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -584,6 +680,12 @@ const QuantTradingSimulator = () => {
               <option value="crash">Market Crash</option>
               <option value="livemarket">Live Market Demo</option>
             </select>
+            <button
+              onClick={() => setShowProfileModal(true)}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-semibold transition-colors"
+            >
+              Profiles
+            </button>
             {marketMode === 'livemarket' && (
               <button
                 onClick={() => setShowWatchlistModal(true)}
@@ -792,6 +894,130 @@ const QuantTradingSimulator = () => {
             </div>
           </div>
         </div>
+        
+        {showProfileModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-slate-800 rounded-lg p-6 max-w-4xl w-full mx-4 max-h-96 overflow-y-auto">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold">Trading Profiles</h2>
+                <button
+                  onClick={() => setShowProfileModal(false)}
+                  className="text-slate-400 hover:text-white text-2xl"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => applyProfile('conservative')}
+                  className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-green-400 text-lg mb-2">🛡️ Conservative</div>
+                  <div className="text-sm text-slate-300 space-y-1">
+                    <div>• Risk: 60% | Speed: 500ms</div>
+                    <div>• Investment: 5% | Stop Loss: 7%</div>
+                    <div>• Reserve: £30k</div>
+                    <div className="text-slate-400 mt-2">Low risk, steady returns</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => applyProfile('balanced')}
+                  className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-blue-400 text-lg mb-2">⚖️ Balanced</div>
+                  <div className="text-sm text-slate-300 space-y-1">
+                    <div>• Risk: 70% | Speed: 100ms</div>
+                    <div>• Investment: 10% | Stop Loss: 5%</div>
+                    <div>• Reserve: £15k</div>
+                    <div className="text-slate-400 mt-2">Moderate risk & reward</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => applyProfile('aggressive')}
+                  className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-orange-400 text-lg mb-2">🔥 Aggressive</div>
+                  <div className="text-sm text-slate-300 space-y-1">
+                    <div>• Risk: 80% | Speed: 25ms</div>
+                    <div>• Investment: 20% | Stop Loss: 4%</div>
+                    <div>• Reserve: £5k</div>
+                    <div className="text-slate-400 mt-2">High risk, high returns</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => applyProfile('hft')}
+                  className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-yellow-400 text-lg mb-2">⚡ HFT Algo</div>
+                  <div className="text-sm text-slate-300 space-y-1">
+                    <div>• Risk: 85% | Speed: 1ms (!)</div>
+                    <div>• Investment: 15% | Stop Loss: 3%</div>
+                    <div>• Reserve: £10k</div>
+                    <div className="text-slate-400 mt-2">Ultra-fast execution</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => applyProfile('daytrader')}
+                  className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-purple-400 text-lg mb-2">📊 Day Trader</div>
+                  <div className="text-sm text-slate-300 space-y-1">
+                    <div>• Risk: 75% | Speed: 50ms</div>
+                    <div>• Investment: 12% | Stop Loss: 4%</div>
+                    <div>• Reserve: £10k</div>
+                    <div className="text-slate-400 mt-2">Active intraday trading</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => applyProfile('scalper')}
+                  className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-red-400 text-lg mb-2">💨 Scalper</div>
+                  <div className="text-sm text-slate-300 space-y-1">
+                    <div>• Risk: 90% | Speed: 5ms</div>
+                    <div>• Investment: 25% | Stop Loss: 2%</div>
+                    <div>• Reserve: £5k</div>
+                    <div className="text-slate-400 mt-2">Tiny moves, big volume</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => applyProfile('swingtrader')}
+                  className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-cyan-400 text-lg mb-2">🌊 Swing Trader</div>
+                  <div className="text-sm text-slate-300 space-y-1">
+                    <div>• Risk: 65% | Speed: 1000ms</div>
+                    <div>• Investment: 15% | Stop Loss: 8%</div>
+                    <div>• Reserve: £20k</div>
+                    <div className="text-slate-400 mt-2">Multi-day positions</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => applyProfile('whale')}
+                  className="p-4 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-lg text-left transition-colors"
+                >
+                  <div className="font-bold text-white text-lg mb-2">🐋 Whale Mode</div>
+                  <div className="text-sm text-white space-y-1">
+                    <div>• Risk: 75% | Speed: 10ms</div>
+                    <div>• Investment: 8% | Stop Loss: 5%</div>
+                    <div>• Reserve: £50k | Capital: £100M</div>
+                    <div className="text-slate-200 mt-2">Institutional scale</div>
+                  </div>
+                </button>
+              </div>
+              <div className="mt-4 text-center text-sm text-slate-400">
+                Select a profile to instantly configure all trading parameters
+              </div>
+            </div>
+          </div>
+        )}
         
         {showCapitalModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
