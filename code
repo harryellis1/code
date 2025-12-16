@@ -15,8 +15,6 @@ const QuantTradingSimulator = () => {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [watchlist, setWatchlist] = useState([]);
   const [showWatchlistModal, setShowWatchlistModal] = useState(false);
-  const [showDeliberationPanel, setShowDeliberationPanel] = useState(true);
-  const [liveDeliberations, setLiveDeliberations] = useState([]);
   const [marketRegime, setMarketRegime] = useState('Normal');
   const [marketData, setMarketData] = useState([]);
   const [trades, setTrades] = useState([]);
@@ -268,7 +266,6 @@ const QuantTradingSimulator = () => {
               const currentPrice = prices[len - 1];
               const rsi = calculateRSI(prices);
               
-              // Pre-compute moving averages
               let sum5 = 0, sum10 = 0, sum20 = 0;
               for (let i = len - 5; i < len; i++) sum5 += prices[i];
               for (let i = len - 10; i < len; i++) sum10 += prices[i];
@@ -277,11 +274,9 @@ const QuantTradingSimulator = () => {
               const ma10 = sum10 / 10;
               const ma20 = sum20 / 20;
               
-              // Momentum
               const momentum5 = (currentPrice - prices[len - 5]) / prices[len - 5];
               const momentum10 = (currentPrice - prices[len - 10]) / prices[len - 10];
               
-              // Volatility
               let varSum = 0;
               for (let i = len - 20; i < len - 1; i++) {
                 const ret = (prices[i + 1] - prices[i]) / prices[i];
@@ -289,14 +284,12 @@ const QuantTradingSimulator = () => {
               }
               const volatility = Math.sqrt(varSum / 19);
               
-              // Z-score
               const slice30 = prices.slice(-30);
               const mean = slice30.reduce((a, b) => a + b, 0) / slice30.length;
               const variance = slice30.reduce((s, p) => s + (p - mean) ** 2, 0) / slice30.length;
               const std = Math.sqrt(variance);
               const zScore = (currentPrice - mean) / std;
               
-              // Trend flags
               const trendUp = ma5 > ma10 && ma10 > ma20;
               const trendDown = ma5 < ma10 && ma10 < ma20;
               
@@ -304,7 +297,6 @@ const QuantTradingSimulator = () => {
               let confidence = 50;
               let reason = '';
               
-              // ENHANCED STRONG BUY CONDITIONS
               if (rsi < 20 && momentum5 > 0.005 && marketInfo.regime !== 'Crisis') {
                 decision = 'BUY';
                 confidence = 95;
@@ -336,7 +328,6 @@ const QuantTradingSimulator = () => {
                 reason = 'Pullback buy';
               }
               
-              // ENHANCED STRONG SHORT CONDITIONS
               else if (marketInfo.regime === 'Crisis' && momentum5 < -0.01) {
                 decision = 'SHORT';
                 confidence = 96;
@@ -373,7 +364,6 @@ const QuantTradingSimulator = () => {
                 reason = 'Extended short';
               }
               
-              // ENHANCED PROFIT TAKING & STOP LOSSES
               const hasLong = prevPortfolio.positions[symbol] > 0;
               const hasShort = prevPortfolio.shorts[symbol] > 0;
               
@@ -381,7 +371,6 @@ const QuantTradingSimulator = () => {
                 const entryPrice = prevPortfolio.entryPrices[symbol] || currentPrice;
                 const pnl = (currentPrice - entryPrice) / entryPrice;
                 
-                // Trailing stop profit taking
                 if (pnl > 0.10) {
                   decision = 'SELL';
                   confidence = 98;
@@ -402,7 +391,6 @@ const QuantTradingSimulator = () => {
                   confidence = 85;
                   reason = 'Lock profit momentum shift';
                 }
-                // Stop loss with context
                 else if (pnl < -stopLossPercent / 100) {
                   decision = 'SELL';
                   confidence = 98;
@@ -413,7 +401,6 @@ const QuantTradingSimulator = () => {
                   confidence = 90;
                   reason = 'Pre-emptive stop';
                 }
-                // Trend reversal exits
                 else if (rsi > 78 && momentum5 < -0.01) {
                   decision = 'SELL';
                   confidence = 85;
@@ -430,7 +417,6 @@ const QuantTradingSimulator = () => {
                 const entryPrice = prevPortfolio.entryPrices[symbol] || currentPrice;
                 const pnl = (entryPrice - currentPrice) / entryPrice;
                 
-                // Enhanced short profit taking
                 if (pnl > 0.08) {
                   decision = 'COVER';
                   confidence = 98;
@@ -446,7 +432,6 @@ const QuantTradingSimulator = () => {
                   confidence = 88;
                   reason = 'Cover oversold bounce risk';
                 }
-                // Short stop loss
                 else if (pnl < -stopLossPercent / 100) {
                   decision = 'COVER';
                   confidence = 98;
@@ -457,7 +442,6 @@ const QuantTradingSimulator = () => {
                   confidence = 90;
                   reason = 'Cover pre-emptive';
                 }
-                // Short reversal exits
                 else if (rsi < 25 && momentum5 > 0.01) {
                   decision = 'COVER';
                   confidence = 85;
@@ -491,8 +475,8 @@ const QuantTradingSimulator = () => {
               if (!price) continue;
               
               if (signal.action === 'BUY' && availableCash > price * 5) {
-                const baseSize = Math.min(availableCash * (investmentPercent / 100), availableCash * 0.25);
-                const confidenceMultiplier = signal.successRate > 90 ? 1.5 : signal.successRate > 85 ? 1.3 : 1.0;
+                const baseSize = Math.min(availableCash * (investmentPercent / 100), availableCash * 0.30);
+                const confidenceMultiplier = signal.successRate > 95 ? 2.0 : signal.successRate > 90 ? 1.8 : signal.successRate > 85 ? 1.5 : 1.2;
                 const positionSize = baseSize * confidenceMultiplier;
                 const sharesToBuy = Math.floor(positionSize / price);
                 if (sharesToBuy > 0 && newPortfolio.cash >= sharesToBuy * price + reserveAmount) {
@@ -503,8 +487,8 @@ const QuantTradingSimulator = () => {
                 }
               } 
               else if (signal.action === 'SHORT' && availableCash > price * 5) {
-                const baseSize = Math.min(availableCash * (investmentPercent / 100), availableCash * 0.20);
-                const confidenceMultiplier = signal.successRate > 92 ? 1.6 : signal.successRate > 88 ? 1.4 : 1.0;
+                const baseSize = Math.min(availableCash * (investmentPercent / 100), availableCash * 0.25);
+                const confidenceMultiplier = signal.successRate > 95 ? 1.8 : signal.successRate > 90 ? 1.6 : signal.successRate > 85 ? 1.4 : 1.2;
                 const positionSize = baseSize * confidenceMultiplier;
                 const sharesToShort = Math.floor(positionSize / price);
                 if (sharesToShort > 0) {
@@ -528,7 +512,7 @@ const QuantTradingSimulator = () => {
                 delete newPortfolio.entryPrices[signal.symbol];
                 newTrades.push({ symbol: signal.symbol, action: 'COVER', shares, price: price.toFixed(2), successRate: signal.successRate, reason: signal.reason });
               }
-            });
+            }
             
             let totalValue = newPortfolio.cash;
             const posKeys = Object.keys(newPortfolio.positions);
@@ -606,18 +590,18 @@ const QuantTradingSimulator = () => {
         setStopLossPercent(7);
         break;
       case 'balanced':
-        setRiskTolerance(70);
-        setTradingFrequency(100);
-        setInvestmentPercent(10);
-        setReserveAmount(15000);
-        setStopLossPercent(5);
+        setRiskTolerance(65);
+        setTradingFrequency(75);
+        setInvestmentPercent(12);
+        setReserveAmount(12000);
+        setStopLossPercent(4);
         break;
       case 'aggressive':
-        setRiskTolerance(80);
-        setTradingFrequency(25);
-        setInvestmentPercent(20);
-        setReserveAmount(5000);
-        setStopLossPercent(4);
+        setRiskTolerance(75);
+        setTradingFrequency(20);
+        setInvestmentPercent(25);
+        setReserveAmount(3000);
+        setStopLossPercent(3);
         break;
       case 'hft':
         setRiskTolerance(85);
@@ -1048,12 +1032,6 @@ const QuantTradingSimulator = () => {
                   <button onClick={() => setStartingCapital(5000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£5M</button>
                   <button onClick={() => setStartingCapital(10000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£10M</button>
                   <button onClick={() => setStartingCapital(100000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£100M</button>
-                  <button onClick={() => setStartingCapital(500000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£500M</button>
-                  <button onClick={() => setStartingCapital(1000000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£1B</button>
-                  <button onClick={() => setStartingCapital(10000000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£10B</button>
-                </div>
-                <div className="text-xs text-slate-400 mt-2">
-                  Range: £1,000 to £1,000,000,000 (£1 Billion)
                 </div>
                 <div className="flex gap-3 mt-4">
                   <button
