@@ -1,103 +1,105 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { Play, Pause, RotateCcw, TrendingUp, TrendingDown, ChevronDown, ChevronUp } from 'lucide-react';
+import { Play, Pause, RotateCcw, ChevronDown, ChevronUp, TrendingUp, TrendingDown } from 'lucide-react';
 
-const QuantTradingSimulator = () => {
+const MultiMarketTradingSimulator = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [marketMode, setMarketMode] = useState('normal');
   const [riskTolerance, setRiskTolerance] = useState(50);
   const [tradingFrequency, setTradingFrequency] = useState(1);
-  const [investmentPercent, setInvestmentPercent] = useState(10);
+  const [investmentPercent, setInvestmentPercent] = useState(15);
   const [reserveAmount, setReserveAmount] = useState(10000);
   const [stopLossPercent, setStopLossPercent] = useState(5);
   const [takeProfitPercent, setTakeProfitPercent] = useState(15);
-  const [autoTakeProfit, setAutoTakeProfit] = useState(true);
+  const [autoMode, setAutoMode] = useState(true);
   const [startingCapital, setStartingCapital] = useState(100000);
-  const [nanoMode, setNanoMode] = useState(true);
   const [showCapitalModal, setShowCapitalModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [watchlist, setWatchlist] = useState([]);
-  const [showWatchlistModal, setShowWatchlistModal] = useState(false);
-  const [marketRegime, setMarketRegime] = useState('Normal');
-  const [marketData, setMarketData] = useState([]);
-  const [expandedSection, setExpandedSection] = useState('controls');
-  const [lastVote, setLastVote] = useState([]);
+  const [expandedSection, setExpandedSection] = useState('portfolio');
+  const [lastVote, setLastVote] = useState({});
   const [voteTime, setVoteTime] = useState(0);
-  const [portfolio, setPortfolio] = useState({
-    cash: 100000,
+
+  const [markets, setMarkets] = useState({
+    stocks: { data: [], portfolio: null, stats: null, bots: null },
+    crypto: { data: [], portfolio: null, stats: null, bots: null },
+    forex: { data: [], portfolio: null, stats: null, bots: null },
+    commodities: { data: [], portfolio: null, stats: null, bots: null }
+  });
+
+  const timeStep = useRef(0);
+  const intervalRef = useRef(null);
+  const tradeIntervalRef = useRef(null);
+  const marketFactorRef = useRef({ stocks: 1.0, crypto: 1.0, forex: 1.0, commodities: 1.0 });
+  const marketTrend = useRef(0);
+  const completedTradesRef = useRef({ stocks: [], crypto: [], forex: [], commodities: [] });
+  const tradeHistoryRef = useRef({ stocks: [], crypto: [], forex: [], commodities: [] });
+
+  // Using realistic current market prices (as of late 2024/early 2025)
+  const ASSETS = useMemo(() => ({
+    stocks: {
+      AAPL: { volatility: 0.018, meanPrice: 195, color: '#3b82f6', name: 'Apple Inc.' },
+      MSFT: { volatility: 0.016, meanPrice: 415, color: '#10b981', name: 'Microsoft' },
+      NVDA: { volatility: 0.032, meanPrice: 495, color: '#f59e0b', name: 'NVIDIA' },
+      GOOGL: { volatility: 0.019, meanPrice: 165, color: '#8b5cf6', name: 'Alphabet' },
+      TSLA: { volatility: 0.038, meanPrice: 350, color: '#ef4444', name: 'Tesla' },
+      AMZN: { volatility: 0.022, meanPrice: 185, color: '#ec4899', name: 'Amazon' }
+    },
+    crypto: {
+      BTC: { volatility: 0.045, meanPrice: 97500, color: '#f59e0b', name: 'Bitcoin' },
+      ETH: { volatility: 0.050, meanPrice: 3650, color: '#8b5cf6', name: 'Ethereum' },
+      SOL: { volatility: 0.065, meanPrice: 220, color: '#06b6d4', name: 'Solana' },
+      BNB: { volatility: 0.042, meanPrice: 685, color: '#eab308', name: 'Binance Coin' },
+      XRP: { volatility: 0.055, meanPrice: 2.45, color: '#3b82f6', name: 'Ripple' },
+      ADA: { volatility: 0.048, meanPrice: 1.05, color: '#10b981', name: 'Cardano' }
+    },
+    forex: {
+      EURUSD: { volatility: 0.008, meanPrice: 1.0385, color: '#3b82f6', name: 'EUR/USD' },
+      GBPUSD: { volatility: 0.009, meanPrice: 1.2515, color: '#10b981', name: 'GBP/USD' },
+      USDJPY: { volatility: 0.010, meanPrice: 157.85, color: '#ef4444', name: 'USD/JPY' },
+      USDCHF: { volatility: 0.008, meanPrice: 0.9125, color: '#f59e0b', name: 'USD/CHF' },
+      AUDUSD: { volatility: 0.011, meanPrice: 0.6235, color: '#8b5cf6', name: 'AUD/USD' },
+      USDCAD: { volatility: 0.009, meanPrice: 1.4385, color: '#ec4899', name: 'USD/CAD' }
+    },
+    commodities: {
+      GOLD: { volatility: 0.015, meanPrice: 2645, color: '#eab308', name: 'Gold' },
+      SILVER: { volatility: 0.022, meanPrice: 30.15, color: '#94a3b8', name: 'Silver' },
+      OIL: { volatility: 0.028, meanPrice: 70.25, color: '#0ea5e9', name: 'Crude Oil' },
+      NATGAS: { volatility: 0.035, meanPrice: 3.42, color: '#06b6d4', name: 'Natural Gas' },
+      COPPER: { volatility: 0.020, meanPrice: 4.12, color: '#f97316', name: 'Copper' },
+      WHEAT: { volatility: 0.025, meanPrice: 5.45, color: '#84cc16', name: 'Wheat' }
+    }
+  }), []);
+
+  const createInitialBots = useCallback(() => ({
+    momentum: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'RSI + MACD' },
+    meanReversion: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Bollinger Bands' },
+    breakout: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Volume + ATR' },
+    volatility: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'ATR + IV' },
+    trend: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'SMA crossovers' },
+    fibonacci: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Fib retracements' }
+  }), []);
+
+  const createInitialPortfolio = useCallback((capital) => ({
+    cash: capital,
     positions: {},
     shorts: {},
     entryPrices: {},
     entryTimes: {},
-    totalValue: 100000,
-    history: [],
-    peakValue: 100000
-  });
-  const [stats, setStats] = useState({
-    totalReturn: 0,
-    winRate: 0,
-    totalTrades: 0,
-    sharpeRatio: 0,
-    drawdown: 0
-  });
-  
-  const ensembleBotsRef = useRef({
-    momentum: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'RSI + MACD momentum' },
-    meanReversion: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Bollinger Bands + Z-Score' },
-    breakout: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Volume + ATR breakouts' },
-    volatility: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'ATR + IV analysis' },
-    trend: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'SMA crossovers + ADX' },
-    fibonacci: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Fib retracements' },
-    ichimoku: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Ichimoku Cloud' },
-    stochastic: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Stochastic oscillator' },
-    macd: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'MACD histogram' },
-    vwap: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'VWAP deviation' }
-  });
-  const [ensembleBotsDisplay, setEnsembleBotsDisplay] = useState(ensembleBotsRef.current);
-  
-  const votingCacheRef = useRef(new Map());
-  const priceHistoryRef = useRef({});
-  
-  const tradeHistoryRef = useRef([]);
-  const completedTradesRef = useRef([]);
-  const timeStep = useRef(0);
-  const intervalRef = useRef(null);
-  const tradeIntervalRef = useRef(null);
-  const marketFactor = useRef(1.0);
-  const marketTrend = useRef(0);
-
-  const STOCKS = useMemo(() => ({
-    AAPL: { sector: 'tech', beta: 1.25, volatility: 0.018, meanPrice: 230, color: '#3b82f6', name: 'Apple Inc.' },
-    MSFT: { sector: 'tech', beta: 1.15, volatility: 0.016, meanPrice: 500, color: '#10b981', name: 'Microsoft Corp.' },
-    NVDA: { sector: 'tech', beta: 1.75, volatility: 0.032, meanPrice: 185, color: '#f59e0b', name: 'NVIDIA Corp.' },
-    TSLA: { sector: 'auto', beta: 2.00, volatility: 0.038, meanPrice: 430, color: '#ef4444', name: 'Tesla Inc.' },
-    GOOGL: { sector: 'tech', beta: 1.10, volatility: 0.019, meanPrice: 195, color: '#8b5cf6', name: 'Alphabet Inc.' },
-    AMZN: { sector: 'retail', beta: 1.30, volatility: 0.022, meanPrice: 230, color: '#ec4899', name: 'Amazon.com Inc.' },
-    META: { sector: 'tech', beta: 1.40, volatility: 0.025, meanPrice: 640, color: '#06b6d4', name: 'Meta Platforms' },
-    JPM: { sector: 'finance', beta: 1.15, volatility: 0.020, meanPrice: 260, color: '#84cc16', name: 'JPMorgan Chase' },
-    BAC: { sector: 'finance', beta: 1.20, volatility: 0.021, meanPrice: 48, color: '#f97316', name: 'Bank of America' },
-    WMT: { sector: 'retail', beta: 0.60, volatility: 0.013, meanPrice: 105, color: '#14b8a6', name: 'Walmart Inc.' },
-    JNJ: { sector: 'healthcare', beta: 0.70, volatility: 0.012, meanPrice: 155, color: '#a855f7', name: 'Johnson & Johnson' },
-    PFE: { sector: 'healthcare', beta: 0.65, volatility: 0.018, meanPrice: 26, color: '#f43f5e', name: 'Pfizer Inc.' },
-    XOM: { sector: 'energy', beta: 1.05, volatility: 0.024, meanPrice: 120, color: '#eab308', name: 'Exxon Mobil' },
-    CVX: { sector: 'energy', beta: 1.00, volatility: 0.023, meanPrice: 165, color: '#22c55e', name: 'Chevron Corp.' },
-    DIS: { sector: 'media', beta: 1.20, volatility: 0.021, meanPrice: 115, color: '#6366f1', name: 'Walt Disney Co.' },
-    NFLX: { sector: 'media', beta: 1.50, volatility: 0.028, meanPrice: 980, color: '#dc2626', name: 'Netflix Inc.' },
-    BA: { sector: 'aerospace', beta: 1.60, volatility: 0.030, meanPrice: 180, color: '#0ea5e9', name: 'Boeing Co.' },
-    AMD: { sector: 'tech', beta: 1.80, volatility: 0.035, meanPrice: 145, color: '#d946ef', name: 'AMD Inc.' },
-    INTC: { sector: 'tech', beta: 1.10, volatility: 0.022, meanPrice: 22, color: '#78716c', name: 'Intel Corp.' },
-    KO: { sector: 'consumer', beta: 0.55, volatility: 0.011, meanPrice: 68, color: '#16a34a', name: 'Coca-Cola Co.' }
+    stopLosses: {},
+    takeProfits: {},
+    totalValue: capital,
+    history: [capital],
+    peakValue: capital
   }), []);
 
-  const generatePrice = useCallback((symbol, prevPrice, mode) => {
-    const config = STOCKS[symbol];
+  const generatePrice = useCallback((symbol, prevPrice, marketType, mode) => {
+    const config = ASSETS[marketType][symbol];
     if (!config) return prevPrice;
     
     let volatilityMultiplier = 1;
     let trendBias = 0;
 
-    if (mode === 'livemarket') volatilityMultiplier = 0.8;
-    else if (mode === 'gorilla') volatilityMultiplier = 3;
+    if (mode === 'gorilla') volatilityMultiplier = 3;
     else if (mode === 'announcement') {
       volatilityMultiplier = 2;
       trendBias = marketTrend.current * 0.003;
@@ -106,17 +108,20 @@ const QuantTradingSimulator = () => {
       trendBias = -0.008;
     }
 
+    if (marketType === 'crypto') volatilityMultiplier *= 1.5;
+
     const volatility = config.volatility * volatilityMultiplier;
     const randomShock = volatility * (Math.random() - 0.5) * 2;
-    const marketShock = config.beta * (marketFactor.current - 1) * 0.02;
+    const marketShock = (marketFactorRef.current[marketType] - 1) * 0.02;
     const totalChange = prevPrice * (randomShock + marketShock + trendBias);
     const newPrice = Math.max(0.01, prevPrice + totalChange);
-    return Math.max(config.meanPrice * 0.3, Math.min(config.meanPrice * 2.0, newPrice));
-  }, [STOCKS]);
+    return Math.max(config.meanPrice * 0.5, Math.min(config.meanPrice * 1.5, newPrice));
+  }, [ASSETS]);
 
   const calculateRSI = useCallback((prices, period = 14) => {
     if (prices.length < period + 1) return 50;
-    let gains = 0, losses = 0;
+    let gains = 0;
+    let losses = 0;
     for (let i = prices.length - period; i < prices.length; i++) {
       if (i === 0) continue;
       const change = prices[i] - prices[i - 1];
@@ -130,103 +135,22 @@ const QuantTradingSimulator = () => {
     return 100 - (100 / (1 + rs));
   }, []);
 
-  const calculateMACD = useCallback((prices) => {
-    if (prices.length < 26) return { macd: 0, signal: 0, histogram: 0 };
-    
-    const ema12 = prices.slice(-12).reduce((a, b) => a + b, 0) / 12;
-    const ema26 = prices.slice(-26).reduce((a, b) => a + b, 0) / 26;
-    const macd = ema12 - ema26;
-    const signal = macd * 0.8;
-    const histogram = macd - signal;
-    
-    return { macd, signal, histogram };
-  }, []);
-
   const calculateBollingerBands = useCallback((prices, period = 20) => {
     if (prices.length < period) return { upper: 0, middle: 0, lower: 0, bandwidth: 0 };
-    
     const slice = prices.slice(-period);
     const middle = slice.reduce((a, b) => a + b, 0) / period;
     const variance = slice.reduce((sum, p) => sum + Math.pow(p - middle, 2), 0) / period;
     const stdDev = Math.sqrt(variance);
-    
     const upper = middle + (stdDev * 2);
     const lower = middle - (stdDev * 2);
     const bandwidth = (upper - lower) / middle;
-    
     return { upper, middle, lower, bandwidth };
   }, []);
 
-  const calculateATR = useCallback((prices, period = 14) => {
-    if (prices.length < period + 1) return 0;
-    
-    let trSum = 0;
-    for (let i = prices.length - period; i < prices.length; i++) {
-      const high = prices[i];
-      const low = prices[i] * 0.98;
-      const prevClose = prices[i - 1];
-      const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
-      trSum += tr;
-    }
-    
-    return trSum / period;
-  }, []);
-
-  const calculateStochastic = useCallback((prices, period = 14) => {
-    if (prices.length < period) return { k: 50, d: 50 };
-    
-    const slice = prices.slice(-period);
-    const currentPrice = prices[prices.length - 1];
-    const lowest = Math.min(...slice);
-    const highest = Math.max(...slice);
-    
-    const k = highest > lowest ? ((currentPrice - lowest) / (highest - lowest)) * 100 : 50;
-    const d = k * 0.9;
-    
-    return { k, d };
-  }, []);
-
-  const calculateADX = useCallback((prices, period = 14) => {
-    if (prices.length < period + 1) return 0;
-    
-    let dmPlus = 0, dmMinus = 0;
-    for (let i = prices.length - period; i < prices.length; i++) {
-      const upMove = prices[i] - prices[i - 1];
-      const downMove = prices[i - 1] - prices[i];
-      if (upMove > downMove && upMove > 0) dmPlus += upMove;
-      if (downMove > upMove && downMove > 0) dmMinus += downMove;
-    }
-    
-    const adx = Math.abs(dmPlus - dmMinus) / (dmPlus + dmMinus + 0.0001) * 100;
-    return adx;
-  }, []);
-
-  const calculateVWAP = useCallback((prices, volumes) => {
-    if (prices.length < 20) return prices[prices.length - 1];
-    
-    const slice = prices.slice(-20);
-    const volSlice = volumes.slice(-20);
-    
-    let cumVol = 0, cumPV = 0;
-    for (let i = 0; i < slice.length; i++) {
-      cumVol += volSlice[i];
-      cumPV += slice[i] * volSlice[i];
-    }
-    
-    return cumVol > 0 ? cumPV / cumVol : slice[slice.length - 1];
-  }, []);
-
-  const generateBotSignals = useCallback((symbol, prices, volumes, currentPrice, marketInfo, bots) => {
+  const generateBotSignals = useCallback((symbol, prices, currentPrice, bots, useAutoMode) => {
     const botSignals = [];
-    
     const rsi = calculateRSI(prices);
-    const rsi9 = calculateRSI(prices, 9);
-    const macd = calculateMACD(prices);
     const bb = calculateBollingerBands(prices);
-    const atr = calculateATR(prices);
-    const stoch = calculateStochastic(prices);
-    const adx = calculateADX(prices);
-    const vwap = calculateVWAP(prices, volumes);
     
     const ma5 = prices.slice(-5).reduce((a, b) => a + b, 0) / 5;
     const ma10 = prices.slice(-10).reduce((a, b) => a + b, 0) / 10;
@@ -241,157 +165,334 @@ const QuantTradingSimulator = () => {
     const variance = slice30.reduce((s, p) => s + Math.pow(p - mean, 2), 0) / slice30.length;
     const stdDev = Math.sqrt(variance);
     const zScore = stdDev > 0.01 ? (currentPrice - mean) / stdDev : 0;
-    
     const bbPosition = bb.upper > bb.lower ? (currentPrice - bb.lower) / (bb.upper - bb.lower) : 0.5;
-    const vwapDev = Math.abs(currentPrice - vwap) / vwap;
+
+    // Calculate volume trend
+    const recentVolatility = prices.slice(-10).reduce((sum, p, i, arr) => {
+      if (i === 0) return sum;
+      return sum + Math.abs((p - arr[i-1]) / arr[i-1]);
+    }, 0) / 9;
+
+    // Calculate ATR for dynamic stop loss/take profit
+    let stopLoss, takeProfit;
     
-    const fib618 = mean - stdDev * 0.618;
-    const tenkan = (Math.max(...prices.slice(-9)) + Math.min(...prices.slice(-9))) / 2;
-    const kijun = (Math.max(...prices.slice(-26)) + Math.min(...prices.slice(-26))) / 2;
-    
-    // Enhanced momentum conditions
-    if (rsi < 35 && macd.histogram > 0 && momentum5 > 0.003 && adx > 20) {
-      botSignals.push({ action: 'BUY', confidence: 94, bot: 'momentum', weight: bots.momentum.score });
-    } else if (rsi > 65 && macd.histogram < 0 && momentum5 < -0.003) {
-      botSignals.push({ action: 'SHORT', confidence: 92, bot: 'momentum', weight: bots.momentum.score });
-    }
-    
-    // Enhanced mean reversion with tighter bands
-    if (bbPosition < 0.15 && zScore < -1.8 && momentum5 > -0.01) {
-      botSignals.push({ action: 'BUY', confidence: 96, bot: 'meanReversion', weight: bots.meanReversion.score });
-    } else if (bbPosition > 0.85 && zScore > 1.8 && momentum5 < 0.01) {
-      botSignals.push({ action: 'SHORT', confidence: 94, bot: 'meanReversion', weight: bots.meanReversion.score });
-    }
-    
-    // Enhanced breakout with volume confirmation
-    if (currentPrice > bb.upper && atr > mean * 0.018 && momentum5 > 0.015 && adx > 25) {
-      botSignals.push({ action: 'BUY', confidence: 91, bot: 'breakout', weight: bots.breakout.score });
-    }
-    
-    // Volatility squeeze plays
-    if (bb.bandwidth < 0.04 && rsi < 45 && momentum10 > 0) {
-      botSignals.push({ action: 'BUY', confidence: 88, bot: 'volatility', weight: bots.volatility.score });
-    } else if (bb.bandwidth > 0.15 && marketInfo.regime === 'Crisis') {
-      botSignals.push({ action: 'SHORT', confidence: 95, bot: 'volatility', weight: bots.volatility.score });
-    }
-    
-    // Strong trend following with confirmation
-    if (ma5 > ma10 && ma10 > ma20 && ma20 > ma50 && adx > 28 && momentum10 > 0.01) {
-      botSignals.push({ action: 'BUY', confidence: 93, bot: 'trend', weight: bots.trend.score });
-    } else if (ma5 < ma10 && ma10 < ma20 && ma20 < ma50 && adx > 28 && momentum10 < -0.01) {
-      botSignals.push({ action: 'SHORT', confidence: 91, bot: 'trend', weight: bots.trend.score });
-    }
-    
-    // Fibonacci with momentum confirmation
-    if (currentPrice <= fib618 && momentum5 > 0.005 && rsi < 40) {
-      botSignals.push({ action: 'BUY', confidence: 89, bot: 'fibonacci', weight: bots.fibonacci.score });
-    } else if (currentPrice >= mean + stdDev * 1.618 && momentum5 < -0.005) {
-      botSignals.push({ action: 'SHORT', confidence: 87, bot: 'fibonacci', weight: bots.fibonacci.score });
-    }
-    
-    // Ichimoku with all signals aligned
-    if (currentPrice > tenkan && tenkan > kijun && currentPrice > ma50 && adx > 22) {
-      botSignals.push({ action: 'BUY', confidence: 92, bot: 'ichimoku', weight: bots.ichimoku.score });
-    } else if (currentPrice < tenkan && tenkan < kijun && currentPrice < ma50) {
-      botSignals.push({ action: 'SHORT', confidence: 89, bot: 'ichimoku', weight: bots.ichimoku.score });
-    }
-    
-    // Stochastic with RSI confirmation
-    if (stoch.k < 25 && stoch.k > stoch.d && rsi < 38 && momentum5 > 0) {
-      botSignals.push({ action: 'BUY', confidence: 93, bot: 'stochastic', weight: bots.stochastic.score });
-    } else if (stoch.k > 75 && stoch.k < stoch.d && rsi > 62) {
-      botSignals.push({ action: 'SHORT', confidence: 91, bot: 'stochastic', weight: bots.stochastic.score });
-    }
-    
-    // MACD with strong momentum
-    if (macd.macd > macd.signal && macd.histogram > 0.3 && rsi9 < 65 && momentum5 > 0.008) {
-      botSignals.push({ action: 'BUY', confidence: 92, bot: 'macd', weight: bots.macd.score });
-    } else if (macd.macd < macd.signal && macd.histogram < -0.3 && momentum5 < -0.008) {
-      botSignals.push({ action: 'SHORT', confidence: 90, bot: 'macd', weight: bots.macd.score });
-    }
-    
-    // VWAP mean reversion
-    if (currentPrice < vwap * 0.975 && momentum5 > 0.005 && rsi < 42) {
-      botSignals.push({ action: 'BUY', confidence: 88, bot: 'vwap', weight: bots.vwap.score });
-    } else if (currentPrice > vwap * 1.025 && vwapDev > 0.025 && momentum5 < -0.005) {
-      botSignals.push({ action: 'SHORT', confidence: 86, bot: 'vwap', weight: bots.vwap.score });
+    if (useAutoMode) {
+      const atr = prices.length > 14 ? (() => {
+        let trSum = 0;
+        for (let i = prices.length - 14; i < prices.length; i++) {
+          const high = prices[i];
+          const low = prices[i] * 0.98;
+          const prevClose = prices[i - 1];
+          const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+          trSum += tr;
+        }
+        return trSum / 14;
+      })() : currentPrice * 0.02;
+
+      const atrPercent = (atr / currentPrice) * 100;
+
+      // MOMENTUM BOT - Ultra-responsive to momentum shifts
+      if (rsi < 32 && momentum5 > 0.003 && momentum10 > -0.002 && ma5 > ma10) {
+        stopLoss = Math.max(1.5, atrPercent * 1.1);
+        takeProfit = Math.max(12, atrPercent * 6);
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 97, 
+          bot: 'momentum', 
+          weight: bots.momentum.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      } else if (rsi > 68 && momentum5 < -0.003 && momentum10 < 0.002 && ma5 < ma10) {
+        stopLoss = Math.max(1.5, atrPercent * 1.1);
+        takeProfit = Math.max(10, atrPercent * 5);
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 95, 
+          bot: 'momentum', 
+          weight: bots.momentum.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      }
+      
+      // MEAN REVERSION BOT - Hair-trigger reversions
+      if (bbPosition < 0.12 && zScore < -1.9 && rsi < 28 && momentum5 > -0.008) {
+        stopLoss = Math.max(1.0, atrPercent * 0.8);
+        takeProfit = Math.max(7, atrPercent * 3.5);
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 99, 
+          bot: 'meanReversion', 
+          weight: bots.meanReversion.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      } else if (bbPosition > 0.88 && zScore > 1.9 && rsi > 72 && momentum5 < 0.008) {
+        stopLoss = Math.max(1.0, atrPercent * 0.8);
+        takeProfit = Math.max(6, atrPercent * 3.2);
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 97, 
+          bot: 'meanReversion', 
+          weight: bots.meanReversion.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      }
+      
+      // BREAKOUT BOT - Instant breakout detection
+      if (currentPrice > bb.upper && momentum5 > 0.012 && recentVolatility > 0.012 && ma5 > ma10) {
+        stopLoss = Math.max(2.0, atrPercent * 1.5);
+        takeProfit = Math.max(18, atrPercent * 7);
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 94, 
+          bot: 'breakout', 
+          weight: bots.breakout.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      } else if (currentPrice < bb.lower && momentum5 < -0.012 && recentVolatility > 0.012 && ma5 < ma10) {
+        stopLoss = Math.max(2.0, atrPercent * 1.5);
+        takeProfit = Math.max(15, atrPercent * 6);
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 92, 
+          bot: 'breakout', 
+          weight: bots.breakout.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      }
+
+      // VOLATILITY BOT - Pre-emptive squeeze detection
+      if (bb.bandwidth < 0.035 && rsi < 42 && recentVolatility < 0.012 && momentum10 > -0.005) {
+        stopLoss = Math.max(1.8, atrPercent * 1.3);
+        takeProfit = Math.max(14, atrPercent * 6.5);
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 91, 
+          bot: 'volatility', 
+          weight: bots.volatility.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      } else if (bb.bandwidth > 0.12 && recentVolatility > 0.03) {
+        stopLoss = Math.max(2.2, atrPercent * 1.6);
+        takeProfit = Math.max(8, atrPercent * 4);
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 89, 
+          bot: 'volatility', 
+          weight: bots.volatility.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      }
+      
+      // TREND BOT - Rapid trend identification
+      if (ma5 > ma10 && ma10 > ma20 && ma20 > ma50 && momentum10 > 0.01 && rsi > 42 && rsi < 68) {
+        stopLoss = Math.max(2.2, atrPercent * 1.6);
+        takeProfit = Math.max(20, atrPercent * 8);
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 96, 
+          bot: 'trend', 
+          weight: bots.trend.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      } else if (ma5 < ma10 && ma10 < ma20 && ma20 < ma50 && momentum10 < -0.01 && rsi < 58 && rsi > 32) {
+        stopLoss = Math.max(2.2, atrPercent * 1.6);
+        takeProfit = Math.max(17, atrPercent * 7);
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 94, 
+          bot: 'trend', 
+          weight: bots.trend.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      }
+
+      // FIBONACCI BOT - Lightning-fast fib retracements
+      const fib382 = mean - stdDev * 0.382;
+      const fib618 = mean - stdDev * 0.618;
+      const fib1618 = mean + stdDev * 1.618;
+      const fib2618 = mean + stdDev * 2.618;
+      
+      if (currentPrice <= fib618 && currentPrice >= fib382 * 0.98 && momentum5 > 0.005 && rsi < 38) {
+        stopLoss = Math.max(1.3, atrPercent * 1.0);
+        takeProfit = Math.max(11, atrPercent * 4.5);
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 92, 
+          bot: 'fibonacci', 
+          weight: bots.fibonacci.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      } else if (currentPrice >= fib1618 && momentum5 < -0.005 && rsi > 62) {
+        stopLoss = Math.max(1.3, atrPercent * 1.0);
+        takeProfit = Math.max(10, atrPercent * 4);
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 90, 
+          bot: 'fibonacci', 
+          weight: bots.fibonacci.score,
+          stopLoss: stopLoss,
+          takeProfit: takeProfit
+        });
+      }
+    } else {
+      // Manual mode - use stricter entry conditions
+      if (rsi < 32 && momentum5 > 0.003 && ma5 > ma10) {
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 97, 
+          bot: 'momentum', 
+          weight: bots.momentum.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      } else if (rsi > 68 && momentum5 < -0.003 && ma5 < ma10) {
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 95, 
+          bot: 'momentum', 
+          weight: bots.momentum.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      }
+      
+      if (bbPosition < 0.12 && zScore < -1.9 && rsi < 28) {
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 99, 
+          bot: 'meanReversion', 
+          weight: bots.meanReversion.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      } else if (bbPosition > 0.88 && zScore > 1.9 && rsi > 72) {
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 97, 
+          bot: 'meanReversion', 
+          weight: bots.meanReversion.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      }
+      
+      if (currentPrice > bb.upper && momentum5 > 0.012 && ma5 > ma10) {
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 94, 
+          bot: 'breakout', 
+          weight: bots.breakout.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      } else if (currentPrice < bb.lower && momentum5 < -0.012 && ma5 < ma10) {
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 92, 
+          bot: 'breakout', 
+          weight: bots.breakout.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      }
+
+      if (bb.bandwidth < 0.035 && rsi < 42) {
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 91, 
+          bot: 'volatility', 
+          weight: bots.volatility.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      }
+      
+      if (ma5 > ma10 && ma10 > ma20 && ma20 > ma50 && momentum10 > 0.01) {
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 96, 
+          bot: 'trend', 
+          weight: bots.trend.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      } else if (ma5 < ma10 && ma10 < ma20 && ma20 < ma50 && momentum10 < -0.01) {
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 94, 
+          bot: 'trend', 
+          weight: bots.trend.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      }
+
+      const fib618 = mean - stdDev * 0.618;
+      const fib1618 = mean + stdDev * 1.618;
+      if (currentPrice <= fib618 && momentum5 > 0.005 && rsi < 38) {
+        botSignals.push({ 
+          action: 'BUY', 
+          confidence: 92, 
+          bot: 'fibonacci', 
+          weight: bots.fibonacci.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      } else if (currentPrice >= fib1618 && momentum5 < -0.005 && rsi > 62) {
+        botSignals.push({ 
+          action: 'SHORT', 
+          confidence: 90, 
+          bot: 'fibonacci', 
+          weight: bots.fibonacci.score,
+          stopLoss: null,
+          takeProfit: null
+        });
+      }
     }
     
     return botSignals;
-  }, [calculateRSI, calculateMACD, calculateBollingerBands, calculateATR, calculateStochastic, calculateADX, calculateVWAP]);
+  }, [calculateRSI, calculateBollingerBands]);
 
-  const detectMarketCondition = useCallback((data) => {
-    if (data.length < 30) return { regime: 'Normal' };
-    const recent = data.slice(-30);
-    let totalChange = 0, volatilitySum = 0;
-    const symbols = Object.keys(STOCKS);
-    
-    symbols.forEach(symbol => {
-      const prices = recent.map(d => d[symbol]).filter(p => p !== undefined);
-      if (prices.length < 30) return;
-      
-      const change = (prices[prices.length - 1] - prices[0]) / prices[0];
-      totalChange += change;
-      
-      let varianceSum = 0;
-      for (let i = 1; i < prices.length; i++) {
-        const ret = (prices[i] - prices[i-1]) / Math.max(prices[i-1], 0.01);
-        varianceSum += ret * ret;
-      }
-      volatilitySum += Math.sqrt(varianceSum / (prices.length - 1));
-    });
-    
-    const avgChange = totalChange / symbols.length;
-    const avgVol = volatilitySum / symbols.length;
-    
-    if (avgChange < -0.10 && avgVol > 0.025) return { regime: 'Crisis' };
-    if (avgChange < -0.05 && avgVol > 0.020) return { regime: 'Bear Market' };
-    if (avgVol > 0.030) return { regime: 'Panic Selling' };
-    if (Math.abs(avgChange) > 0.08) return { regime: avgChange > 0 ? 'Bull Market' : 'Distribution' };
-    return { regime: 'Normal' };
-  }, [STOCKS]);
+  const initializeMarkets = useCallback(() => {
+    const newMarkets = {};
+    const capitalPerMarket = startingCapital / 4;
 
-  const initializeMarket = useCallback(() => {
-    const initial = { time: 0 };
-    Object.keys(STOCKS).forEach(symbol => {
-      initial[symbol] = STOCKS[symbol].meanPrice;
+    ['stocks', 'crypto', 'forex', 'commodities'].forEach(marketType => {
+      const initial = { time: 0 };
+      Object.keys(ASSETS[marketType]).forEach(symbol => {
+        initial[symbol] = ASSETS[marketType][symbol].meanPrice;
+      });
+
+      newMarkets[marketType] = {
+        data: [initial],
+        portfolio: createInitialPortfolio(capitalPerMarket),
+        stats: { totalReturn: 0, winRate: 0, totalTrades: 0, sharpeRatio: 0 },
+        bots: createInitialBots()
+      };
     });
-    setMarketData([initial]);
-    setPortfolio({
-      cash: startingCapital,
-      positions: {},
-      shorts: {},
-      entryPrices: {},
-      entryTimes: {},
-      totalValue: startingCapital,
-      history: [startingCapital],
-      peakValue: startingCapital
-    });
-    setStats({ totalReturn: 0, winRate: 0, totalTrades: 0, sharpeRatio: 0, drawdown: 0 });
-    ensembleBotsRef.current = {
-      momentum: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'RSI + MACD momentum' },
-      meanReversion: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Bollinger Bands + Z-Score' },
-      breakout: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Volume + ATR breakouts' },
-      volatility: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'ATR + IV analysis' },
-      trend: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'SMA crossovers + ADX' },
-      fibonacci: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Fib retracements' },
-      ichimoku: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Ichimoku Cloud' },
-      stochastic: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'Stochastic oscillator' },
-      macd: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'MACD histogram' },
-      vwap: { score: 100, wins: 0, losses: 0, totalPnL: 0, description: 'VWAP deviation' }
-    };
-    setEnsembleBotsDisplay({...ensembleBotsRef.current});
-    tradeHistoryRef.current = [];
-    completedTradesRef.current = [];
+
+    setMarkets(newMarkets);
+    setLastVote({});
+    completedTradesRef.current = { stocks: [], crypto: [], forex: [], commodities: [] };
+    tradeHistoryRef.current = { stocks: [], crypto: [], forex: [], commodities: [] };
     timeStep.current = 0;
-    marketFactor.current = 1.0;
-    setLastVote([]);
-    setVoteTime(0);
-  }, [startingCapital, STOCKS]);
+    marketFactorRef.current = { stocks: 1.0, crypto: 1.0, forex: 1.0, commodities: 1.0 };
+  }, [startingCapital, ASSETS, createInitialPortfolio, createInitialBots]);
 
   useEffect(() => {
-    initializeMarket();
-  }, [initializeMarket]);
+    initializeMarkets();
+  }, [initializeMarkets]);
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -399,447 +500,301 @@ const QuantTradingSimulator = () => {
     
     if (isRunning) {
       intervalRef.current = setInterval(() => {
-        setMarketData(prevData => {
-          if (prevData.length === 0) return prevData;
-          const lastData = prevData[prevData.length - 1];
+        setMarkets(prevMarkets => {
+          const newMarkets = JSON.parse(JSON.stringify(prevMarkets));
 
-          if (marketMode === 'announcement') {
-            marketTrend.current = Math.random() > 0.5 ? 1 : -1;
-            marketFactor.current += marketTrend.current * 0.02;
-          } else if (marketMode === 'crash') {
-            marketFactor.current -= 0.015;
-          } else {
-            marketFactor.current += (Math.random() - 0.5) * 0.01;
-          }
-          marketFactor.current = Math.max(0.7, Math.min(1.3, marketFactor.current));
+          ['stocks', 'crypto', 'forex', 'commodities'].forEach(marketType => {
+            if (newMarkets[marketType].data.length === 0) return;
+            const lastData = newMarkets[marketType].data[newMarkets[marketType].data.length - 1];
 
-          const newData = { time: timeStep.current + 1 };
-          const symbolsToUpdate = marketMode === 'livemarket' && watchlist.length > 0 ? watchlist : Object.keys(STOCKS);
-          
-          symbolsToUpdate.forEach(symbol => {
-            if (STOCKS[symbol] && lastData[symbol] !== undefined) {
-              newData[symbol] = generatePrice(symbol, lastData[symbol], marketMode);
+            if (marketMode === 'announcement') {
+              marketTrend.current = Math.random() > 0.5 ? 1 : -1;
+              marketFactorRef.current[marketType] += marketTrend.current * 0.02;
+            } else if (marketMode === 'crash') {
+              marketFactorRef.current[marketType] -= 0.015;
+            } else {
+              marketFactorRef.current[marketType] += (Math.random() - 0.5) * 0.01;
             }
-          });
+            marketFactorRef.current[marketType] = Math.max(0.7, Math.min(1.3, marketFactorRef.current[marketType]));
 
-          Object.keys(STOCKS).forEach(symbol => {
-            if (newData[symbol] === undefined) {
-              newData[symbol] = lastData[symbol] || STOCKS[symbol].meanPrice;
-            }
+            const newData = { time: timeStep.current + 1 };
+            Object.keys(ASSETS[marketType]).forEach(symbol => {
+              if (lastData[symbol] !== undefined) {
+                newData[symbol] = generatePrice(symbol, lastData[symbol], marketType, marketMode);
+              }
+            });
+
+            const allData = [...newMarkets[marketType].data, newData];
+            if (allData.length > 200) allData.shift();
+            newMarkets[marketType].data = allData;
+
+            const portfolio = newMarkets[marketType].portfolio;
+            let totalValue = portfolio.cash;
+            Object.keys(portfolio.positions).forEach(sym => {
+              if (newData[sym]) totalValue += portfolio.positions[sym] * newData[sym];
+            });
+            Object.keys(portfolio.shorts).forEach(sym => {
+              if (newData[sym]) totalValue -= portfolio.shorts[sym] * newData[sym];
+            });
+
+            const newHistory = [...portfolio.history, totalValue];
+            if (newHistory.length > 200) newHistory.shift();
+
+            newMarkets[marketType].portfolio.totalValue = totalValue;
+            newMarkets[marketType].portfolio.history = newHistory;
+            newMarkets[marketType].portfolio.peakValue = Math.max(portfolio.peakValue, totalValue);
           });
 
           timeStep.current++;
-          
-          setPortfolio(prev => {
-            let totalValue = prev.cash;
-            Object.keys(prev.positions).forEach(sym => {
-              if (newData[sym]) totalValue += prev.positions[sym] * newData[sym];
-            });
-            Object.keys(prev.shorts).forEach(sym => {
-              if (newData[sym]) totalValue -= prev.shorts[sym] * newData[sym];
-            });
-            
-            const newHistory = [...prev.history, totalValue];
-            if (newHistory.length > 200) newHistory.shift();
-            
-            return {
-              ...prev,
-              totalValue,
-              history: newHistory,
-              peakValue: Math.max(prev.peakValue, totalValue)
-            };
-          });
-
-          const allData = [...prevData, newData];
-          if (allData.length > 200) allData.shift();
-          return allData;
+          return newMarkets;
         });
       }, 50);
       
       tradeIntervalRef.current = setInterval(() => {
-        setMarketData(prevData => {
-          if (prevData.length < 30) return prevData;
+        setMarkets(prevMarkets => {
+          if (prevMarkets.stocks.data.length < 30) return prevMarkets;
           
           const voteStartTime = performance.now();
-          const newData = prevData[prevData.length - 1];
-          const marketInfo = detectMarketCondition(prevData);
-          setMarketRegime(marketInfo.regime);
-          
-          const voteData = [];
-          const signals = [];
-          const activeSymbols = marketMode === 'livemarket' && watchlist.length > 0 ? watchlist : Object.keys(STOCKS);
-          
-          activeSymbols.forEach(symbol => {
-            if (!newData[symbol]) return;
-            const prices = prevData.map(d => d[symbol]).filter(p => p !== undefined);
-            if (prices.length < 30) return;
-            
-            const currentPrice = prices[prices.length - 1];
-            const volumes = prices.map((p, i) => Math.random() * 1000000);
-            
-            const cacheKey = `${symbol}_${currentPrice.toFixed(2)}`;
-            let botSignals = votingCacheRef.current.get(cacheKey);
-            
-            if (!botSignals) {
-              botSignals = generateBotSignals(symbol, prices, volumes, currentPrice, marketInfo, ensembleBotsRef.current);
-              votingCacheRef.current.set(cacheKey, botSignals);
-              if (votingCacheRef.current.size > 100) {
-                const firstKey = votingCacheRef.current.keys().next().value;
-                votingCacheRef.current.delete(firstKey);
-              }
-            }
-            
-            let decision = 'HOLD';
-            let confidence = 50;
-            let selectedBot = null;
-            
-            if (botSignals.length > 0) {
-              const scored = botSignals.map(s => ({
-                ...s,
-                score: s.confidence * (s.weight / 100)
-              })).sort((a, b) => b.score - a.score);
-              
-              voteData.push({
-                symbol,
-                votes: scored.slice(0, 5).map(s => ({ bot: s.bot, score: s.score.toFixed(1), action: s.action }))
-              });
-              
-              const best = scored[0];
-              if (best.score >= riskTolerance) {
-                decision = best.action;
-                confidence = best.confidence;
-                selectedBot = best.bot;
-              }
-            }
-            
-            if (decision !== 'HOLD' && confidence >= riskTolerance) {
-              signals.push({ symbol, action: decision, successRate: confidence, bot: selectedBot, entryPrice: currentPrice });
-            }
-          });
-          
-          const voteEndTime = performance.now();
-          setVoteTime((voteEndTime - voteStartTime).toFixed(3));
-          setLastVote(voteData);
-          
-          setPortfolio(prevPortfolio => {
-            const hasLong = (sym) => (prevPortfolio.positions[sym] || 0) > 0;
-            const hasShort = (sym) => (prevPortfolio.shorts[sym] || 0) > 0;
-            
+          const newMarkets = JSON.parse(JSON.stringify(prevMarkets));
+          const allVotes = {};
+
+          ['stocks', 'crypto', 'forex', 'commodities'].forEach(marketType => {
+            const marketData = newMarkets[marketType].data;
+            if (marketData.length < 30) return;
+
+            const newData = marketData[marketData.length - 1];
+            const signals = [];
             const exitSignals = [];
-            
-            // Advanced exit logic for long positions
-            Object.keys(prevPortfolio.positions).forEach(symbol => {
-              if (!newData[symbol] || !hasLong(symbol)) return;
-              const entryPrice = prevPortfolio.entryPrices[symbol];
-              const currentPrice = newData[symbol];
-              const entryTime = prevPortfolio.entryTimes[symbol] || timeStep.current;
-              const holdingPeriod = timeStep.current - entryTime;
-              if (!entryPrice) return;
-              
-              const prices = prevData.map(d => d[symbol]).filter(p => p !== undefined);
-              const rsi = calculateRSI(prices);
-              const macd = calculateMACD(prices);
-              const bb = calculateBollingerBands(prices);
-              const stoch = calculateStochastic(prices);
-              
-              const pnl = (currentPrice - entryPrice) / entryPrice;
-              const pnlPercent = pnl * 100;
-              
-              // Calculate dynamic take profit based on volatility and market conditions
-              let dynamicTakeProfit = takeProfitPercent;
-              if (autoTakeProfit) {
-                const atr = calculateATR(prices);
-                const volatilityFactor = atr / currentPrice;
-                
-                // Adjust based on volatility (higher volatility = higher target)
-                if (volatilityFactor > 0.03) {
-                  dynamicTakeProfit = takeProfitPercent * 1.5; // 50% higher in high volatility
-                } else if (volatilityFactor > 0.02) {
-                  dynamicTakeProfit = takeProfitPercent * 1.2; // 20% higher
-                } else if (volatilityFactor < 0.01) {
-                  dynamicTakeProfit = takeProfitPercent * 0.7; // Lower in low volatility
+            const portfolio = newMarkets[marketType].portfolio;
+            const bots = newMarkets[marketType].bots;
+            const marketVotes = [];
+
+            Object.keys(ASSETS[marketType]).forEach(symbol => {
+              if (!newData[symbol]) return;
+              const prices = marketData.map(d => d[symbol]).filter(p => p !== undefined);
+              if (prices.length < 30) return;
+
+              const currentPrice = prices[prices.length - 1];
+              const botSignals = generateBotSignals(symbol, prices, currentPrice, bots, autoMode);
+
+              if (botSignals.length > 0) {
+                const scored = botSignals.map(s => ({
+                  ...s,
+                  score: s.confidence * (s.weight / 100)
+                })).sort((a, b) => b.score - a.score);
+
+                marketVotes.push({
+                  symbol,
+                  votes: scored.slice(0, 4).map(s => ({ 
+                    bot: s.bot, 
+                    score: s.score.toFixed(1), 
+                    action: s.action 
+                  }))
+                });
+
+                const best = scored[0];
+                if (best.score >= riskTolerance) {
+                  signals.push({ 
+                    symbol, 
+                    action: best.action, 
+                    bot: best.bot, 
+                    entryPrice: currentPrice,
+                    stopLoss: best.stopLoss,
+                    takeProfit: best.takeProfit
+                  });
                 }
+              }
+
+              if (portfolio.positions[symbol] > 0) {
+                const entryPrice = portfolio.entryPrices[symbol];
+                const tradeStopLoss = portfolio.stopLosses?.[symbol] || stopLossPercent;
+                const tradeTakeProfit = portfolio.takeProfits?.[symbol] || takeProfitPercent;
                 
-                // Adjust based on market regime
-                if (marketInfo.regime === 'Bull Market') {
-                  dynamicTakeProfit *= 1.3; // Let winners run in bull markets
-                } else if (marketInfo.regime === 'Crisis' || marketInfo.regime === 'Bear Market') {
-                  dynamicTakeProfit *= 0.8; // Take profits faster in bear markets
+                if (entryPrice) {
+                  const pnlPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
+                  
+                  // Take profit
+                  if (pnlPercent >= tradeTakeProfit) {
+                    exitSignals.push({ symbol, action: 'SELL', reason: `TP ${pnlPercent.toFixed(1)}%` });
+                  } 
+                  // Stop loss
+                  else if (pnlPercent <= -tradeStopLoss) {
+                    exitSignals.push({ symbol, action: 'SELL', reason: `SL ${pnlPercent.toFixed(1)}%` });
+                  }
+                  // Trailing stop for profits > 50% of target
+                  else if (pnlPercent > tradeTakeProfit * 0.5) {
+                    const trailingStop = pnlPercent * 0.6; // Lock in 60% of gains
+                    const currentDrawdown = pnlPercent - ((currentPrice - prices[prices.length - 2]) / entryPrice) * 100;
+                    if (currentDrawdown > trailingStop * 0.4) {
+                      exitSignals.push({ symbol, action: 'SELL', reason: `Trail ${pnlPercent.toFixed(1)}%` });
+                    }
+                  }
                 }
+              }
+
+              if (portfolio.shorts[symbol] > 0) {
+                const entryPrice = portfolio.entryPrices[symbol];
+                const tradeStopLoss = portfolio.stopLosses?.[symbol] || stopLossPercent;
+                const tradeTakeProfit = portfolio.takeProfits?.[symbol] || takeProfitPercent * 0.8;
                 
-                // Adjust based on trend strength
-                const adx = calculateADX(prices);
-                if (adx > 30) {
-                  dynamicTakeProfit *= 1.2; // Higher targets in strong trends
+                if (entryPrice) {
+                  const pnlPercent = ((entryPrice - currentPrice) / entryPrice) * 100;
+                  
+                  // Take profit
+                  if (pnlPercent >= tradeTakeProfit) {
+                    exitSignals.push({ symbol, action: 'COVER', reason: `TP ${pnlPercent.toFixed(1)}%` });
+                  } 
+                  // Stop loss
+                  else if (pnlPercent <= -tradeStopLoss) {
+                    exitSignals.push({ symbol, action: 'COVER', reason: `SL ${pnlPercent.toFixed(1)}%` });
+                  }
+                  // Trailing stop for shorts
+                  else if (pnlPercent > tradeTakeProfit * 0.5) {
+                    const trailingStop = pnlPercent * 0.6;
+                    const currentDrawdown = pnlPercent - ((entryPrice - prices[prices.length - 2]) / entryPrice) * 100;
+                    if (currentDrawdown > trailingStop * 0.4) {
+                      exitSignals.push({ symbol, action: 'COVER', reason: `Trail ${pnlPercent.toFixed(1)}%` });
+                    }
+                  }
                 }
-                
-                // Cap the dynamic target
-                dynamicTakeProfit = Math.min(dynamicTakeProfit, takeProfitPercent * 2);
-                dynamicTakeProfit = Math.max(dynamicTakeProfit, takeProfitPercent * 0.5);
-              }
-              
-              // Take profit conditions (multiple strategies)
-              if (pnlPercent >= dynamicTakeProfit) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 99, reason: `${autoTakeProfit ? 'Auto ' : ''}TP ${pnlPercent.toFixed(1)}%` });
-              }
-              else if (pnlPercent > dynamicTakeProfit * 0.6 && rsi > 72) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 97, reason: 'Partial profit + overbought' });
-              }
-              else if (pnlPercent > dynamicTakeProfit * 0.5 && macd.histogram < -0.4) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 95, reason: 'Profit + MACD reversal' });
-              }
-              else if (pnlPercent > 6 && stoch.k > 82) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 93, reason: 'Good profit + stoch OB' });
-              }
-              else if (pnlPercent > 4 && currentPrice > bb.upper * 1.015) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 91, reason: 'Profit + BB extension' });
-              }
-              
-              // Trailing stop loss - tighter to lock in gains
-              else if (pnlPercent > 8 && pnl < (pnlPercent / 100) * 0.75) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 98, reason: 'Trailing stop triggered' });
-              }
-              
-              // Stop loss conditions
-              else if (pnlPercent <= -stopLossPercent) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 99, reason: 'Stop loss' });
-              }
-              else if (pnlPercent < -stopLossPercent * 0.65 && macd.histogram < -0.5) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 96, reason: 'Pre-emptive stop + MACD' });
-              }
-              else if (pnlPercent < -stopLossPercent * 0.55 && rsi < 22) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 94, reason: 'Deep oversold emergency' });
-              }
-              
-              // Time-based exits - faster exit for stagnant positions
-              else if (holdingPeriod > 40 && Math.abs(pnlPercent) < 0.8) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 85, reason: 'Stagnant position' });
-              }
-              
-              // Technical breakdown - more sensitive
-              else if (rsi > 78 && macd.histogram < -0.2 && pnlPercent > 0) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 90, reason: 'Technical reversal' });
-              }
-              else if (currentPrice < bb.lower && pnlPercent < -1) {
-                exitSignals.push({ symbol, action: 'SELL', successRate: 88, reason: 'BB breakdown' });
               }
             });
-            
-            // Advanced exit logic for short positions
-            Object.keys(prevPortfolio.shorts).forEach(symbol => {
-              if (!newData[symbol] || !hasShort(symbol)) return;
-              const entryPrice = prevPortfolio.entryPrices[symbol];
-              const currentPrice = newData[symbol];
-              const entryTime = prevPortfolio.entryTimes[symbol] || timeStep.current;
-              const holdingPeriod = timeStep.current - entryTime;
-              if (!entryPrice) return;
-              
-              const prices = prevData.map(d => d[symbol]).filter(p => p !== undefined);
-              const rsi = calculateRSI(prices);
-              const macd = calculateMACD(prices);
-              const bb = calculateBollingerBands(prices);
-              const stoch = calculateStochastic(prices);
-              
-              const pnl = (entryPrice - currentPrice) / entryPrice;
-              const pnlPercent = pnl * 100;
-              
-              // Calculate dynamic take profit for shorts
-              let dynamicTakeProfit = takeProfitPercent * 0.8; // Shorts typically have lower targets
-              if (autoTakeProfit) {
-                const atr = calculateATR(prices);
-                const volatilityFactor = atr / currentPrice;
-                
-                if (volatilityFactor > 0.03) {
-                  dynamicTakeProfit = takeProfitPercent * 1.2;
-                } else if (volatilityFactor > 0.02) {
-                  dynamicTakeProfit = takeProfitPercent * 1.0;
-                } else if (volatilityFactor < 0.01) {
-                  dynamicTakeProfit = takeProfitPercent * 0.6;
-                }
-                
-                if (marketInfo.regime === 'Crisis' || marketInfo.regime === 'Bear Market') {
-                  dynamicTakeProfit *= 1.3; // Let short winners run in bear markets
-                } else if (marketInfo.regime === 'Bull Market') {
-                  dynamicTakeProfit *= 0.7; // Take profits faster in bull markets (risky to short)
-                }
-                
-                const adx = calculateADX(prices);
-                if (adx > 30) {
-                  dynamicTakeProfit *= 1.15;
-                }
-                
-                dynamicTakeProfit = Math.min(dynamicTakeProfit, takeProfitPercent * 1.5);
-                dynamicTakeProfit = Math.max(dynamicTakeProfit, takeProfitPercent * 0.4);
-              }
-              
-              // Take profit conditions for shorts
-              if (pnlPercent >= dynamicTakeProfit) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 99, reason: `${autoTakeProfit ? 'Auto ' : ''}Cover ${pnlPercent.toFixed(1)}%` });
-              }
-              else if (pnlPercent > dynamicTakeProfit * 0.5 && rsi < 28) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 97, reason: 'Profit + oversold bounce' });
-              }
-              else if (pnlPercent > 5 && macd.histogram > 0.4) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 95, reason: 'Profit + MACD reversal' });
-              }
-              else if (pnlPercent > 3 && stoch.k < 22) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 93, reason: 'Profit + stoch reversal' });
-              }
-              else if (pnlPercent > 2.5 && currentPrice < bb.lower) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 91, reason: 'Profit + BB support' });
-              }
-              
-              // Trailing stop for shorts - tighter
-              else if (pnlPercent > 7 && pnl < (pnlPercent / 100) * 0.75) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 98, reason: 'Short trailing stop' });
-              }
-              
-              // Stop loss for shorts
-              else if (pnlPercent <= -stopLossPercent) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 99, reason: 'Cover stop loss' });
-              }
-              else if (pnlPercent < -stopLossPercent * 0.65 && macd.histogram > 0.5) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 96, reason: 'Pre-emptive cover' });
-              }
-              else if (pnlPercent < -stopLossPercent * 0.55 && rsi > 72) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 94, reason: 'Squeeze risk' });
-              }
-              
-              // Time-based exits - faster
-              else if (holdingPeriod > 40 && Math.abs(pnlPercent) < 0.8) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 85, reason: 'Stagnant short' });
-              }
-              
-              // Technical reversal - more sensitive
-              else if (rsi < 23 && macd.histogram > 0.2 && pnlPercent > 0) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 90, reason: 'Reversal imminent' });
-              }
-              else if (currentPrice > bb.upper && pnlPercent < -1) {
-                exitSignals.push({ symbol, action: 'COVER', successRate: 88, reason: 'BB breakout against' });
-              }
-            });
-            
+
+            allVotes[marketType] = marketVotes;
+
             const allSignals = [...exitSignals, ...signals];
-            const newPortfolio = { 
-              ...prevPortfolio, 
-              positions: { ...prevPortfolio.positions }, 
-              shorts: { ...prevPortfolio.shorts }, 
-              entryPrices: { ...prevPortfolio.entryPrices },
-              entryTimes: { ...prevPortfolio.entryTimes }
-            };
-            const availableCash = Math.max(0, newPortfolio.cash - reserveAmount);
-            
+            const availableCash = Math.max(0, portfolio.cash - reserveAmount);
             const pendingBotUpdates = [];
-            
+
             allSignals.forEach(signal => {
               const price = newData[signal.symbol];
               if (!price || price <= 0) return;
-              
-              if (signal.action === 'BUY' && availableCash > price * 5 && !hasLong(signal.symbol)) {
-                const portfolioValueRatio = prevPortfolio.totalValue / startingCapital;
-                const scaledInvestment = investmentPercent * portfolioValueRatio;
-                const positionSize = Math.min(availableCash * (scaledInvestment / 100), availableCash * 0.30);
+
+              const hasLong = (portfolio.positions[signal.symbol] || 0) > 0;
+              const hasShort = (portfolio.shorts[signal.symbol] || 0) > 0;
+
+              if (signal.action === 'BUY' && availableCash > price * 5 && !hasLong && !hasShort) {
+                const positionSize = availableCash * (investmentPercent / 100);
                 const shares = Math.floor(positionSize / price);
-                if (shares > 0 && newPortfolio.cash >= shares * price + reserveAmount) {
-                  newPortfolio.cash -= shares * price;
-                  newPortfolio.positions[signal.symbol] = shares;
-                  newPortfolio.entryPrices[signal.symbol] = price;
-                  newPortfolio.entryTimes[signal.symbol] = timeStep.current;
-                  tradeHistoryRef.current.push({ 
-                    symbol: signal.symbol, 
-                    bot: signal.bot, 
-                    entryPrice: price, 
-                    action: 'BUY', 
+                if (shares > 0 && portfolio.cash >= shares * price + reserveAmount) {
+                  portfolio.cash -= shares * price;
+                  portfolio.positions[signal.symbol] = shares;
+                  portfolio.entryPrices[signal.symbol] = price;
+                  portfolio.entryTimes[signal.symbol] = timeStep.current;
+                  
+                  // Store individual stop loss and take profit for this trade
+                  if (!portfolio.stopLosses) portfolio.stopLosses = {};
+                  if (!portfolio.takeProfits) portfolio.takeProfits = {};
+                  portfolio.stopLosses[signal.symbol] = signal.stopLoss || stopLossPercent;
+                  portfolio.takeProfits[signal.symbol] = signal.takeProfit || takeProfitPercent;
+                  
+                  tradeHistoryRef.current[marketType].push({
+                    symbol: signal.symbol,
+                    bot: signal.bot,
+                    entryPrice: price,
+                    action: 'BUY',
                     shares,
-                    entryTime: timeStep.current
+                    stopLoss: signal.stopLoss,
+                    takeProfit: signal.takeProfit
                   });
                 }
-              } 
-              else if (signal.action === 'SHORT' && availableCash > price * 5 && !hasShort(signal.symbol)) {
-                const portfolioValueRatio = prevPortfolio.totalValue / startingCapital;
-                const scaledInvestment = investmentPercent * portfolioValueRatio * 0.8;
-                const positionSize = Math.min(availableCash * (scaledInvestment / 100), availableCash * 0.25);
+              } else if (signal.action === 'SHORT' && availableCash > price * 5 && !hasShort && !hasLong) {
+                const positionSize = availableCash * (investmentPercent / 100) * 0.8;
                 const shares = Math.floor(positionSize / price);
                 if (shares > 0) {
-                  newPortfolio.cash += shares * price;
-                  newPortfolio.shorts[signal.symbol] = shares;
-                  newPortfolio.entryPrices[signal.symbol] = price;
-                  newPortfolio.entryTimes[signal.symbol] = timeStep.current;
-                  tradeHistoryRef.current.push({ 
-                    symbol: signal.symbol, 
-                    bot: signal.bot, 
-                    entryPrice: price, 
-                    action: 'SHORT', 
+                  portfolio.cash += shares * price;
+                  portfolio.shorts[signal.symbol] = shares;
+                  portfolio.entryPrices[signal.symbol] = price;
+                  portfolio.entryTimes[signal.symbol] = timeStep.current;
+                  
+                  // Store individual stop loss and take profit for this trade
+                  if (!portfolio.stopLosses) portfolio.stopLosses = {};
+                  if (!portfolio.takeProfits) portfolio.takeProfits = {};
+                  portfolio.stopLosses[signal.symbol] = signal.stopLoss || stopLossPercent;
+                  portfolio.takeProfits[signal.symbol] = signal.takeProfit || (takeProfitPercent * 0.8);
+                  
+                  tradeHistoryRef.current[marketType].push({
+                    symbol: signal.symbol,
+                    bot: signal.bot,
+                    entryPrice: price,
+                    action: 'SHORT',
                     shares,
-                    entryTime: timeStep.current
+                    stopLoss: signal.stopLoss,
+                    takeProfit: signal.takeProfit
                   });
                 }
-              }
-              else if (signal.action === 'SELL' && newPortfolio.positions[signal.symbol] > 0) {
-                const shares = newPortfolio.positions[signal.symbol];
-                const entryPrice = newPortfolio.entryPrices[signal.symbol] || price;
+              } else if (signal.action === 'SELL' && portfolio.positions[signal.symbol] > 0) {
+                const shares = portfolio.positions[signal.symbol];
+                const entryPrice = portfolio.entryPrices[signal.symbol] || price;
                 const pnl = (price - entryPrice) * shares;
-                
-                newPortfolio.cash += shares * price;
-                delete newPortfolio.positions[signal.symbol];
-                delete newPortfolio.entryPrices[signal.symbol];
-                delete newPortfolio.entryTimes[signal.symbol];
-                
-                completedTradesRef.current.push({ 
-                  pnl, 
+
+                portfolio.cash += shares * price;
+                delete portfolio.positions[signal.symbol];
+                delete portfolio.entryPrices[signal.symbol];
+                delete portfolio.entryTimes[signal.symbol];
+                if (portfolio.stopLosses) delete portfolio.stopLosses[signal.symbol];
+                if (portfolio.takeProfits) delete portfolio.takeProfits[signal.symbol];
+
+                completedTradesRef.current[marketType].push({
+                  pnl,
                   pnlPercent: ((price - entryPrice) / entryPrice) * 100,
                   symbol: signal.symbol,
                   reason: signal.reason
                 });
-                if (completedTradesRef.current.length > 50) completedTradesRef.current.shift();
-                
-                const tradeIdx = tradeHistoryRef.current.findIndex(t => 
+                if (completedTradesRef.current[marketType].length > 50) {
+                  completedTradesRef.current[marketType].shift();
+                }
+
+                const tradeIdx = tradeHistoryRef.current[marketType].findIndex(t =>
                   t.symbol === signal.symbol && t.action === 'BUY' && t.shares === shares
                 );
                 if (tradeIdx !== -1) {
-                  const trade = tradeHistoryRef.current[tradeIdx];
+                  const trade = tradeHistoryRef.current[marketType][tradeIdx];
                   if (trade.bot) {
                     pendingBotUpdates.push({ bot: trade.bot, pnl });
                   }
-                  tradeHistoryRef.current.splice(tradeIdx, 1);
+                  tradeHistoryRef.current[marketType].splice(tradeIdx, 1);
                 }
-              }
-              else if (signal.action === 'COVER' && newPortfolio.shorts[signal.symbol] > 0) {
-                const shares = newPortfolio.shorts[signal.symbol];
-                const entryPrice = newPortfolio.entryPrices[signal.symbol] || price;
+              } else if (signal.action === 'COVER' && portfolio.shorts[signal.symbol] > 0) {
+                const shares = portfolio.shorts[signal.symbol];
+                const entryPrice = portfolio.entryPrices[signal.symbol] || price;
                 const pnl = (entryPrice - price) * shares;
                 const coverCost = shares * price;
-                
-                if (newPortfolio.cash >= coverCost) {
-                  newPortfolio.cash -= coverCost;
-                  delete newPortfolio.shorts[signal.symbol];
-                  delete newPortfolio.entryPrices[signal.symbol];
-                  delete newPortfolio.entryTimes[signal.symbol];
-                  
-                  completedTradesRef.current.push({ 
-                    pnl, 
+
+                if (portfolio.cash >= coverCost) {
+                  portfolio.cash -= coverCost;
+                  delete portfolio.shorts[signal.symbol];
+                  delete portfolio.entryPrices[signal.symbol];
+                  delete portfolio.entryTimes[signal.symbol];
+                  if (portfolio.stopLosses) delete portfolio.stopLosses[signal.symbol];
+                  if (portfolio.takeProfits) delete portfolio.takeProfits[signal.symbol];
+
+                  completedTradesRef.current[marketType].push({
+                    pnl,
                     pnlPercent: ((entryPrice - price) / entryPrice) * 100,
                     symbol: signal.symbol,
                     reason: signal.reason
                   });
-                  if (completedTradesRef.current.length > 50) completedTradesRef.current.shift();
-                  
-                  const tradeIdx = tradeHistoryRef.current.findIndex(t => 
+                  if (completedTradesRef.current[marketType].length > 50) {
+                    completedTradesRef.current[marketType].shift();
+                  }
+
+                  const tradeIdx = tradeHistoryRef.current[marketType].findIndex(t =>
                     t.symbol === signal.symbol && t.action === 'SHORT' && t.shares === shares
                   );
                   if (tradeIdx !== -1) {
-                    const trade = tradeHistoryRef.current[tradeIdx];
+                    const trade = tradeHistoryRef.current[marketType][tradeIdx];
                     if (trade.bot) {
                       pendingBotUpdates.push({ bot: trade.bot, pnl });
                     }
-                    tradeHistoryRef.current.splice(tradeIdx, 1);
+                    tradeHistoryRef.current[marketType].splice(tradeIdx, 1);
                   }
                 }
               }
             });
-            
+
             pendingBotUpdates.forEach(({ bot, pnl }) => {
-              const botData = ensembleBotsRef.current[bot];
+              const botData = bots[bot];
               if (!botData) return;
               const reward = pnl > 0 ? Math.min(50, pnl / 100) : Math.max(-50, pnl / 50);
               botData.score = Math.max(10, Math.min(200, botData.score + reward));
@@ -847,34 +802,29 @@ const QuantTradingSimulator = () => {
               botData.losses = pnl < 0 ? botData.losses + 1 : botData.losses;
               botData.totalPnL = botData.totalPnL + pnl;
             });
-            
-            if (pendingBotUpdates.length > 0) {
-              setEnsembleBotsDisplay({...ensembleBotsRef.current});
-            }
-            
-            let totalValue = newPortfolio.cash;
-            Object.keys(newPortfolio.positions).forEach(sym => {
-              if (newData[sym]) totalValue += newPortfolio.positions[sym] * newData[sym];
+
+            let totalValue = portfolio.cash;
+            Object.keys(portfolio.positions).forEach(sym => {
+              if (newData[sym]) totalValue += portfolio.positions[sym] * newData[sym];
             });
-            Object.keys(newPortfolio.shorts).forEach(sym => {
-              if (newData[sym]) totalValue -= newPortfolio.shorts[sym] * newData[sym];
+            Object.keys(portfolio.shorts).forEach(sym => {
+              if (newData[sym]) totalValue -= portfolio.shorts[sym] * newData[sym];
             });
-            
-            const peakValue = Math.max(prevPortfolio.peakValue, totalValue);
-            const newHistory = [...prevPortfolio.history, totalValue];
+
+            const peakValue = Math.max(portfolio.peakValue, totalValue);
+            const newHistory = [...portfolio.history, totalValue];
             if (newHistory.length > 200) newHistory.shift();
-            
-            newPortfolio.totalValue = totalValue;
-            newPortfolio.peakValue = peakValue;
-            newPortfolio.history = newHistory;
-            
-            const totalReturn = ((totalValue - startingCapital) / startingCapital) * 100;
-            const drawdown = peakValue > 0 ? ((peakValue - totalValue) / peakValue) * 100 : 0;
-            
-            const completedTrades = completedTradesRef.current;
+
+            portfolio.totalValue = totalValue;
+            portfolio.peakValue = peakValue;
+            portfolio.history = newHistory;
+
+            const capitalPerMarket = startingCapital / 4;
+            const totalReturn = ((totalValue - capitalPerMarket) / capitalPerMarket) * 100;
+            const completedTrades = completedTradesRef.current[marketType];
             const wins = completedTrades.filter(t => t.pnl > 0).length;
             const winRate = completedTrades.length > 0 ? (wins / completedTrades.length) * 100 : 0;
-            
+
             let sharpeRatio = 0;
             if (newHistory.length > 30) {
               const returns = [];
@@ -889,60 +839,70 @@ const QuantTradingSimulator = () => {
                 sharpeRatio = stdDev > 0.0001 ? (avgReturn / stdDev) * Math.sqrt(252) : 0;
               }
             }
-            
-            setStats({
+
+            newMarkets[marketType].stats = {
               totalReturn: totalReturn.toFixed(2),
               winRate: winRate.toFixed(1),
               totalTrades: completedTrades.length,
-              sharpeRatio: sharpeRatio.toFixed(2),
-              drawdown: drawdown.toFixed(2)
-            });
-
-            return newPortfolio;
+              sharpeRatio: sharpeRatio.toFixed(2)
+            };
           });
 
-          return prevData;
-        });
-      }, nanoMode ? 0 : tradingFrequency);
-    }
-    
-    const formatFrequency = (freq) => {
-    if (freq === 1) return '1ns (nanosecond)';
-    if (freq < 1000) return `${freq}ms`;
-    return `${(freq / 1000).toFixed(1)}s`;
-  };
+          const voteEndTime = performance.now();
+          setVoteTime((voteEndTime - voteStartTime).toFixed(2));
+          setLastVote(allVotes);
 
-  return () => {
+          return newMarkets;
+        });
+      }, 1); // 1ms = nanosecond-level response
+    }
+
+    return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (tradeIntervalRef.current) clearInterval(tradeIntervalRef.current);
     };
-  }, [isRunning, marketMode, tradingFrequency, nanoMode, watchlist, generatePrice, generateBotSignals, detectMarketCondition, riskTolerance, investmentPercent, stopLossPercent, takeProfitPercent, reserveAmount, startingCapital, autoTakeProfit, calculateRSI, calculateMACD, calculateBollingerBands, calculateATR, calculateStochastic, calculateADX, STOCKS]);
+  }, [isRunning, marketMode, tradingFrequency, generatePrice, generateBotSignals, riskTolerance, investmentPercent, stopLossPercent, takeProfitPercent, reserveAmount, startingCapital, autoMode, ASSETS]);
 
-  const formatFrequency = (freq) => {
-    if (freq === 1) return '1ns (nanosecond)';
-    if (freq < 1000) return `${freq}ms`;
-    return `${(freq / 1000).toFixed(1)}s`;
+  const formatCurrency = (value) => {
+    if (value >= 1000000) return `$${(value / 1000000).toFixed(2)}M`;
+    if (value >= 1000) return `$${(value / 1000).toFixed(1)}k`;
+    return `$${value.toFixed(0)}`;
   };
 
-  const reset = () => {
-    setIsRunning(false);
-    initializeMarket();
+  const formatPrice = (value, marketType) => {
+    if (marketType === 'forex') return value.toFixed(4);
+    if (marketType === 'commodities') return value.toFixed(2);
+    if (value < 10) return value.toFixed(3);
+    return value.toFixed(2);
   };
 
-  const toggleWatchlist = (symbol) => {
-    setWatchlist(prev => prev.includes(symbol) ? prev.filter(s => s !== symbol) : [...prev, symbol]);
+  const getTotalPortfolioValue = () => {
+    return Object.values(markets).reduce((sum, market) => {
+      return sum + (market.portfolio?.totalValue || 0);
+    }, 0);
+  };
+
+  const getAverageStats = () => {
+    const marketTypes = ['stocks', 'crypto', 'forex', 'commodities'];
+    const avgReturn = marketTypes.reduce((sum, type) => sum + parseFloat(markets[type].stats?.totalReturn || 0), 0) / 4;
+    const avgWinRate = marketTypes.reduce((sum, type) => sum + parseFloat(markets[type].stats?.winRate || 0), 0) / 4;
+    const totalTrades = marketTypes.reduce((sum, type) => sum + (markets[type].stats?.totalTrades || 0), 0);
+    const avgSharpe = marketTypes.reduce((sum, type) => sum + parseFloat(markets[type].stats?.sharpeRatio || 0), 0) / 4;
+    
+    return {
+      avgReturn: avgReturn.toFixed(2),
+      avgWinRate: avgWinRate.toFixed(1),
+      totalTrades,
+      avgSharpe: avgSharpe.toFixed(2)
+    };
   };
 
   const applyProfile = (profile) => {
     const profiles = {
-      conservative: { risk: 60, freq: 500, inv: 5, res: 30000, stop: 7, take: 12, auto: true, nano: false },
-      balanced: { risk: 65, freq: 100, inv: 12, res: 12000, stop: 4, take: 15, auto: true, nano: false },
-      aggressive: { risk: 75, freq: 20, inv: 25, res: 3000, stop: 3, take: 20, auto: true, nano: false },
-      hft: { risk: 85, freq: 1, inv: 15, res: 10000, stop: 3, take: 8, auto: false, nano: true },
-      daytrader: { risk: 75, freq: 50, inv: 12, res: 10000, stop: 4, take: 12, auto: true, nano: false },
-      scalper: { risk: 90, freq: 1, inv: 25, res: 5000, stop: 2, take: 5, auto: false, nano: true },
-      swingtrader: { risk: 65, freq: 1000, inv: 15, res: 20000, stop: 8, take: 25, auto: true, nano: false },
-      whale: { risk: 75, freq: 10, inv: 8, res: 50000, stop: 5, take: 18, auto: true, nano: false, cap: 100000000 }
+      conservative: { risk: 75, freq: 1, inv: 10, res: 6000, stop: 4, take: 16, auto: true },
+      balanced: { risk: 78, freq: 1, inv: 18, res: 4000, stop: 2.5, take: 20, auto: true },
+      aggressive: { risk: 82, freq: 1, inv: 28, res: 2000, stop: 2, take: 25, auto: true },
+      scalper: { risk: 88, freq: 1, inv: 22, res: 2500, stop: 1.5, take: 12, auto: false }
     };
     const p = profiles[profile];
     if (p) {
@@ -952,89 +912,103 @@ const QuantTradingSimulator = () => {
       setReserveAmount(p.res);
       setStopLossPercent(p.stop);
       setTakeProfitPercent(p.take);
-      setAutoTakeProfit(p.auto);
-      setNanoMode(p.nano);
-      if (p.cap) setStartingCapital(p.cap);
+      setAutoMode(p.auto);
       setShowProfileModal(false);
     }
   };
 
-  const toggleSection = (section) => {
-    setExpandedSection(expandedSection === section ? null : section);
+  const marketDisplayNames = {
+    stocks: '📈 Stocks',
+    crypto: '₿ Crypto',
+    forex: '💱 Forex',
+    commodities: '🛢️ Commodities'
   };
 
-  const formatCurrency = (value) => {
-    if (value >= 1000000) return `£${(value / 1000000).toFixed(2)}M`;
-    if (value >= 1000) return `£${(value / 1000).toFixed(1)}k`;
-    return `£${value.toFixed(0)}`;
-  };
+  const avgStats = getAverageStats();
+  const totalPortfolioValue = getTotalPortfolioValue();
+  const totalReturn = ((totalPortfolioValue - startingCapital) / startingCapital) * 100;
 
   return (
-    <div className="w-full min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
-      <div className="max-w-7xl mx-auto space-y-4">
+    <div className="w-full min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-4">
+      <div className="max-w-[1800px] mx-auto space-y-4">
+        
+        {/* Header */}
         <div className="flex justify-between items-center flex-wrap gap-3">
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-            10-Bot Ensemble Trading Council 🤖
-          </h1>
+          <div>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+              Multi-Market Trading Council
+            </h1>
+            <div className="text-sm text-slate-400 mt-1">Real-time algorithmic trading across 4 markets</div>
+          </div>
           <div className="flex gap-3 flex-wrap">
-            <select value={marketMode} onChange={(e) => setMarketMode(e.target.value)} className="px-4 py-2 bg-slate-700 rounded-lg font-semibold">
+            <select value={marketMode} onChange={(e) => setMarketMode(e.target.value)} className="px-4 py-2 bg-slate-700 rounded-lg font-semibold text-sm">
               <option value="normal">Normal Market</option>
               <option value="gorilla">Gorilla Mode</option>
-              <option value="announcement">Major Announcement</option>
+              <option value="announcement">Major News</option>
               <option value="crash">Market Crash</option>
-              <option value="livemarket">Live Market Demo</option>
             </select>
-            <button onClick={() => setShowProfileModal(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-semibold">
+            <button onClick={() => setShowProfileModal(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-semibold text-sm">
               Profiles
             </button>
-            {marketMode === 'livemarket' && (
-              <button onClick={() => setShowWatchlistModal(true)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold">
-                Watchlist ({watchlist.length})
-              </button>
-            )}
-            <button onClick={() => setShowCapitalModal(true)} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold">
+            <button onClick={() => setShowCapitalModal(true)} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold text-sm">
               {formatCurrency(startingCapital)}
             </button>
-            <button onClick={() => setIsRunning(!isRunning)} className={`px-6 py-2 rounded-lg flex items-center gap-2 font-semibold ${isRunning ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}>
-              {isRunning ? <Pause size={20} /> : <Play size={20} />}
+            <button onClick={() => setIsRunning(!isRunning)} className={`px-6 py-2 rounded-lg flex items-center gap-2 font-semibold text-sm ${isRunning ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}>
+              {isRunning ? <><Pause size={18} /> Stop</> : <><Play size={18} /> Start</>}
             </button>
-            <button onClick={reset} className="px-6 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg flex items-center gap-2">
-              <RotateCcw size={20} />
+            <button onClick={() => { setIsRunning(false); initializeMarkets(); }} className="px-6 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg flex items-center gap-2">
+              <RotateCcw size={18} />
             </button>
           </div>
         </div>
 
+        {/* Portfolio Overview */}
+        <div className="bg-slate-800 rounded-lg p-6">
+          <h2 className="text-2xl font-bold mb-4">Portfolio Overview</h2>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="bg-slate-700 p-4 rounded-lg">
+              <div className="text-sm text-slate-400">Total Value</div>
+              <div className="text-3xl font-bold text-white">{formatCurrency(totalPortfolioValue)}</div>
+              <div className={`text-sm mt-1 ${totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}%
+              </div>
+            </div>
+            <div className="bg-slate-700 p-4 rounded-lg">
+              <div className="text-sm text-slate-400">Avg Return</div>
+              <div className={`text-2xl font-bold ${parseFloat(avgStats.avgReturn) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {avgStats.avgReturn}%
+              </div>
+            </div>
+            <div className="bg-slate-700 p-4 rounded-lg">
+              <div className="text-sm text-slate-400">Avg Sharpe</div>
+              <div className="text-2xl font-bold text-blue-400">{avgStats.avgSharpe}</div>
+            </div>
+            <div className="bg-slate-700 p-4 rounded-lg">
+              <div className="text-sm text-slate-400">Win Rate</div>
+              <div className="text-2xl font-bold text-purple-400">{avgStats.avgWinRate}%</div>
+            </div>
+            <div className="bg-slate-700 p-4 rounded-lg">
+              <div className="text-sm text-slate-400">Total Trades</div>
+              <div className="text-2xl font-bold text-cyan-400">{avgStats.totalTrades}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Trading Controls */}
         <div className="bg-slate-800 rounded-lg">
-          <button onClick={() => toggleSection('controls')} className="w-full px-6 py-3 flex justify-between items-center hover:bg-slate-700 rounded-lg">
+          <button onClick={() => setExpandedSection(expandedSection === 'controls' ? null : 'controls')} className="w-full px-6 py-3 flex justify-between items-center hover:bg-slate-700 rounded-lg">
             <span className="font-bold text-lg">Trading Controls</span>
             {expandedSection === 'controls' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
           </button>
           {expandedSection === 'controls' && (
-            <div className="p-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 border-t border-slate-700">
+            <div className="p-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4 border-t border-slate-700">
               <div className="bg-slate-700 p-4 rounded-lg">
                 <label className="text-sm font-medium block mb-2">Risk: {riskTolerance}%</label>
                 <input type="range" min="10" max="100" value={riskTolerance} onChange={(e) => setRiskTolerance(Number(e.target.value))} className="w-full" />
               </div>
               <div className="bg-slate-700 p-4 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">Speed: {formatFrequency(tradingFrequency)}</label>
-                  {tradingFrequency === 1 && <span className="text-xs text-yellow-400">⚡</span>}
-                </div>
-                <input 
-                  type="range" 
-                  min="1" 
-                  max="2000" 
-                  value={tradingFrequency} 
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setTradingFrequency(val);
-                    setNanoMode(val === 1);
-                  }} 
-                  className="w-full" 
-                />
-                {tradingFrequency === 1 && (
-                  <div className="text-xs text-yellow-400 mt-1">Nanosecond execution</div>
-                )}
+                <label className="text-sm font-medium block mb-2">Speed: {tradingFrequency}ms</label>
+                <input type="range" min="10" max="2000" value={tradingFrequency} onChange={(e) => setTradingFrequency(Number(e.target.value))} className="w-full" />
               </div>
               <div className="bg-slate-700 p-4 rounded-lg">
                 <label className="text-sm font-medium block mb-2">Invest: {investmentPercent}%</label>
@@ -1045,135 +1019,100 @@ const QuantTradingSimulator = () => {
                 <input type="range" min="0" max="50000" step="1000" value={reserveAmount} onChange={(e) => setReserveAmount(Number(e.target.value))} className="w-full" />
               </div>
               <div className="bg-slate-700 p-4 rounded-lg">
-                <label className="text-sm font-medium block mb-2">Stop Loss: {stopLossPercent}%</label>
-                <input type="range" min="1" max="20" value={stopLossPercent} onChange={(e) => setStopLossPercent(Number(e.target.value))} className="w-full" />
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium">Stop Loss: {stopLossPercent}%</label>
+                  {!autoMode && <span className="text-xs text-blue-400">Manual</span>}
+                </div>
+                <input 
+                  type="range" 
+                  min="1" 
+                  max="20" 
+                  value={stopLossPercent} 
+                  onChange={(e) => setStopLossPercent(Number(e.target.value))} 
+                  disabled={autoMode}
+                  className="w-full" 
+                />
               </div>
               <div className="bg-slate-700 p-4 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm font-medium">Take Profit: {takeProfitPercent}%</label>
-                  <button 
-                    onClick={() => setAutoTakeProfit(!autoTakeProfit)}
-                    className={`text-xs px-2 py-1 rounded ${autoTakeProfit ? 'bg-green-600' : 'bg-slate-600'}`}
-                  >
-                    {autoTakeProfit ? '🤖 AUTO' : '✋ MANUAL'}
-                  </button>
+                  {!autoMode && <span className="text-xs text-blue-400">Manual</span>}
                 </div>
                 <input 
                   type="range" 
                   min="5" 
                   max="50" 
                   value={takeProfitPercent} 
-                  onChange={(e) => {
-                    setTakeProfitPercent(Number(e.target.value));
-                    setAutoTakeProfit(false);
-                  }} 
+                  onChange={(e) => setTakeProfitPercent(Number(e.target.value))} 
+                  disabled={autoMode}
                   className="w-full" 
                 />
-                {autoTakeProfit && (
-                  <div className="text-xs text-green-400 mt-1">Auto-adjusts based on volatility & market regime</div>
+              </div>
+              <div className="bg-slate-700 p-4 rounded-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="text-sm font-medium">Risk Management</label>
+                  <button 
+                    onClick={() => setAutoMode(!autoMode)}
+                    className={`px-3 py-1 rounded text-xs font-bold ${autoMode ? 'bg-green-600' : 'bg-blue-600'}`}
+                  >
+                    {autoMode ? '🤖 AUTO' : '✋ MANUAL'}
+                  </button>
+                </div>
+                {autoMode ? (
+                  <div className="text-xs text-green-400">Bots set SL/TP based on ATR & strategy</div>
+                ) : (
+                  <div className="text-xs text-blue-400">Using manual SL/TP for all trades</div>
                 )}
               </div>
             </div>
           )}
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <div className="bg-slate-800 p-4 rounded-lg">
-            <div className="text-sm text-slate-400">Portfolio Value</div>
-            <div className="text-2xl font-bold">{formatCurrency(portfolio.totalValue)}</div>
-          </div>
-          <div className="bg-slate-800 p-4 rounded-lg">
-            <div className="text-sm text-slate-400">Total Return</div>
-            <div className={`text-2xl font-bold ${parseFloat(stats.totalReturn) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {stats.totalReturn}%
-            </div>
-          </div>
-          <div className="bg-slate-800 p-4 rounded-lg">
-            <div className="text-sm text-slate-400">Sharpe Ratio</div>
-            <div className="text-2xl font-bold text-blue-400">{stats.sharpeRatio}</div>
-          </div>
-          <div className="bg-slate-800 p-4 rounded-lg">
-            <div className="text-sm text-slate-400">Win Rate</div>
-            <div className="text-2xl font-bold text-purple-400">{stats.winRate}%</div>
-          </div>
-          <div className="bg-slate-800 p-4 rounded-lg">
-            <div className="text-sm text-slate-400">Market Regime</div>
-            <div className={`text-lg font-bold ${
-              marketRegime === 'Crisis' ? 'text-red-500' :
-              marketRegime === 'Bear Market' ? 'text-orange-500' :
-              marketRegime === 'Bull Market' ? 'text-green-500' :
-              'text-blue-400'
-            }`}>{marketRegime}</div>
-          </div>
-        </div>
-
-        <div className="bg-slate-800 p-6 rounded-lg">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">10-Bot Trading Council Performance 🤖</h2>
-            <div className="flex items-center gap-4">
-              <div className="text-sm text-slate-400">Vote Time: <span className="text-green-400 font-bold">{voteTime}ms</span></div>
-              {nanoMode && <div className="text-xs text-yellow-400 font-bold animate-pulse">⚡ NANOSECOND MODE ACTIVE</div>}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {Object.entries(ensembleBotsDisplay).map(([name, bot]) => {
-              const totalTrades = bot.wins + bot.losses;
-              const winRate = totalTrades > 0 ? ((bot.wins / totalTrades) * 100).toFixed(1) : '0.0';
-              const scoreColor = bot.score > 120 ? 'text-green-400' : bot.score > 80 ? 'text-blue-400' : bot.score > 50 ? 'text-yellow-400' : 'text-red-400';
-              
-              return (
-                <div key={name} className="bg-slate-700 p-3 rounded-lg">
-                  <div className="font-bold text-base capitalize mb-1">{name}</div>
-                  <div className="text-xs text-slate-400 mb-2">{bot.description}</div>
-                  <div className="space-y-1 text-xs">
-                    <div className={`font-bold ${scoreColor}`}>Score: {bot.score.toFixed(0)}</div>
-                    <div className="text-slate-300">W/L: {bot.wins}/{bot.losses}</div>
-                    <div className="text-slate-300">Win: {winRate}%</div>
-                    <div className={bot.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                      {formatCurrency(bot.totalPnL)}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
+        {/* Live Voting */}
         <div className="bg-slate-800 rounded-lg">
-          <button onClick={() => toggleSection('voting')} className="w-full px-6 py-3 flex justify-between items-center hover:bg-slate-700 rounded-lg">
-            <span className="font-bold text-lg">Live Council Voting</span>
+          <button onClick={() => setExpandedSection(expandedSection === 'voting' ? null : 'voting')} className="w-full px-6 py-3 flex justify-between items-center hover:bg-slate-700 rounded-lg">
+            <div className="flex items-center gap-3">
+              <span className="font-bold text-lg">Live Bot Council Voting</span>
+              <span className="text-sm text-green-400 animate-pulse">⚡ {voteTime}ms response</span>
+              <span className="text-xs text-yellow-400 font-bold">1ns EXECUTION</span>
+            </div>
             {expandedSection === 'voting' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
           </button>
           {expandedSection === 'voting' && (
-            <div className="p-6 border-t border-slate-700 max-h-96 overflow-y-auto">
-              {lastVote.length === 0 ? (
-                <div className="text-slate-400 text-center py-8">No voting data yet. Start the simulation to see bot votes.</div>
+            <div className="p-6 border-t border-slate-700">
+              {Object.keys(lastVote).length === 0 ? (
+                <div className="text-slate-400 text-center py-8">Start the simulation to see live bot voting</div>
               ) : (
-                <div className="space-y-4">
-                  {lastVote.slice(0, 5).map((vote, idx) => (
-                    <div key={idx} className="bg-slate-700 p-4 rounded-lg">
-                      <div className="font-bold text-lg mb-3">{vote.symbol}</div>
-                      {vote.votes && vote.votes.length > 0 && (
-                        <>
-                          <div style={{ width: '100%', height: 150 }}>
-                            <ResponsiveContainer>
-                              <BarChart data={vote.votes} layout="vertical">
-                                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                                <XAxis type="number" stroke="#94a3b8" />
-                                <YAxis dataKey="bot" type="category" stroke="#94a3b8" width={100} />
-                                <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none' }} />
-                                <Bar dataKey="score" fill="#3b82f6" label={{ position: 'right', fill: '#fff' }} />
-                              </BarChart>
-                            </ResponsiveContainer>
-                          </div>
-                          <div className="mt-2 text-sm text-slate-400 flex flex-wrap gap-3">
-                            {vote.votes.map(v => (
-                              <span key={v.bot} className="bg-slate-600 px-2 py-1 rounded">
-                                {v.bot}: <span className={v.action === 'BUY' ? 'text-green-400' : 'text-red-400'}>{v.action}</span> ({v.score})
-                              </span>
-                            ))}
-                          </div>
-                        </>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {Object.entries(lastVote).map(([marketType, votes]) => (
+                    <div key={marketType} className="bg-slate-700 p-4 rounded-lg">
+                      <h3 className="font-bold text-lg mb-3">{marketDisplayNames[marketType]}</h3>
+                      {votes.length === 0 ? (
+                        <div className="text-slate-400 text-sm">No votes this cycle</div>
+                      ) : (
+                        <div className="space-y-3">
+                          {votes.slice(0, 3).map((vote, idx) => (
+                            <div key={idx} className="bg-slate-800 p-3 rounded">
+                              <div className="font-bold mb-2">{vote.symbol}</div>
+                              <ResponsiveContainer width="100%" height={100}>
+                                <BarChart data={vote.votes} layout="vertical">
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                                  <XAxis type="number" stroke="#94a3b8" tick={{ fontSize: 10 }} />
+                                  <YAxis dataKey="bot" type="category" stroke="#94a3b8" width={80} tick={{ fontSize: 10 }} />
+                                  <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', fontSize: 11 }} />
+                                  <Bar dataKey="score" fill="#3b82f6" />
+                                </BarChart>
+                              </ResponsiveContainer>
+                              <div className="flex flex-wrap gap-2 mt-2">
+                                {vote.votes.map(v => (
+                                  <span key={v.bot} className="text-xs bg-slate-900 px-2 py-1 rounded">
+                                    {v.bot}: <span className={v.action === 'BUY' ? 'text-green-400' : 'text-red-400'}>{v.action}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
                   ))}
@@ -1183,133 +1122,166 @@ const QuantTradingSimulator = () => {
           )}
         </div>
 
-        <div className="bg-slate-800 p-6 rounded-lg">
-          <h2 className="text-xl font-semibold mb-4">Market Prices</h2>
-          {marketData.length > 0 && (
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={marketData.slice(-60)}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="time" stroke="#94a3b8" />
-                <YAxis stroke="#94a3b8" />
-                <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none' }} />
-                <Legend />
-                <Line type="monotone" dataKey="AAPL" stroke="#3b82f6" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="MSFT" stroke="#10b981" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="NVDA" stroke="#f59e0b" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="TSLA" stroke="#ef4444" dot={false} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </div>
+        {/* Market Charts & Data */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {['stocks', 'crypto', 'forex', 'commodities'].map(marketType => {
+            const market = markets[marketType];
+            const data = market.data || [];
+            const portfolio = market.portfolio || {};
+            const bots = market.bots || {};
+            const stats = market.stats || {};
+            const assets = ASSETS[marketType];
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-slate-800 rounded-lg">
-            <button onClick={() => toggleSection('positions')} className="w-full px-6 py-3 flex justify-between items-center hover:bg-slate-700 rounded-t-lg">
-              <span className="font-bold text-lg">Current Positions</span>
-              {expandedSection === 'positions' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-            </button>
-            {expandedSection === 'positions' && (
-              <div className="p-6 space-y-2 max-h-96 overflow-y-auto border-t border-slate-700">
-                {Object.keys(STOCKS).map(symbol => {
-                  const shares = portfolio.positions[symbol] || 0;
-                  const shorts = portfolio.shorts[symbol] || 0;
-                  const price = marketData.length > 0 ? marketData[marketData.length - 1][symbol] : 0;
-                  const entryPrice = portfolio.entryPrices[symbol];
-                  const config = STOCKS[symbol];
-                  const hasPosition = shares > 0 || shorts > 0;
-                  
-                  let pnlPercent = 0;
-                  if (hasPosition && entryPrice) {
-                    if (shares > 0) {
-                      pnlPercent = ((price - entryPrice) / entryPrice) * 100;
-                    } else {
-                      pnlPercent = ((entryPrice - price) / entryPrice) * 100;
+            return (
+              <div key={marketType} className="bg-slate-800 rounded-lg p-4">
+                <div className="flex justify-between items-center mb-3">
+                  <h2 className="text-xl font-bold">{marketDisplayNames[marketType]}</h2>
+                  <div className="text-right">
+                    <div className="text-lg font-bold">{formatCurrency(portfolio.totalValue || 0)}</div>
+                    <div className={`text-sm ${parseFloat(stats.totalReturn || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {parseFloat(stats.totalReturn || 0) >= 0 ? '+' : ''}{stats.totalReturn || '0.00'}%
+                    </div>
+                  </div>
+                </div>
+                
+                {data.length > 0 && (
+                  <div className="mb-4">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <LineChart data={data.slice(-60)}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                        <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#1e293b', border: 'none', fontSize: 11 }} 
+                          formatter={(value) => formatPrice(value, marketType)}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        {Object.keys(assets).map(symbol => {
+                          const hasPosition = (portfolio.positions?.[symbol] || 0) > 0 || (portfolio.shorts?.[symbol] || 0) > 0;
+                          return (
+                            <Line 
+                              key={symbol}
+                              type="monotone" 
+                              dataKey={symbol} 
+                              stroke={assets[symbol].color} 
+                              dot={false} 
+                              strokeWidth={hasPosition ? 3 : 2}
+                              strokeOpacity={hasPosition ? 1 : 0.6}
+                            />
+                          );
+                        })}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {/* Bot Performance */}
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  {Object.entries(bots).map(([name, bot]) => {
+                    const totalTrades = bot.wins + bot.losses;
+                    const winRate = totalTrades > 0 ? ((bot.wins / totalTrades) * 100).toFixed(0) : '0';
+                    const scoreColor = bot.score > 120 ? 'text-green-400' : bot.score > 80 ? 'text-blue-400' : bot.score > 50 ? 'text-yellow-400' : 'text-red-400';
+                    
+                    return (
+                      <div key={name} className="bg-slate-700 p-2 rounded text-xs">
+                        <div className="font-bold capitalize text-[11px]">{name}</div>
+                        <div className="flex justify-between items-center mt-1">
+                          <span className={scoreColor}>S:{bot.score.toFixed(0)}</span>
+                          <span className="text-slate-300">W:{winRate}%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Current Positions */}
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  <div className="font-semibold text-sm mb-2 sticky top-0 bg-slate-800">Positions:</div>
+                  {Object.keys(assets).map(symbol => {
+                    const shares = portfolio.positions?.[symbol] || 0;
+                    const shorts = portfolio.shorts?.[symbol] || 0;
+                    const price = data.length > 0 ? data[data.length - 1][symbol] : 0;
+                    const entryPrice = portfolio.entryPrices?.[symbol];
+                    const stopLoss = portfolio.stopLosses?.[symbol];
+                    const takeProfit = portfolio.takeProfits?.[symbol];
+                    const hasPosition = shares > 0 || shorts > 0;
+                    
+                    let pnlPercent = 0;
+                    let positionValue = 0;
+                    if (hasPosition && entryPrice) {
+                      if (shares > 0) {
+                        pnlPercent = ((price - entryPrice) / entryPrice) * 100;
+                        positionValue = shares * price;
+                      } else {
+                        pnlPercent = ((entryPrice - price) / entryPrice) * 100;
+                        positionValue = shorts * price;
+                      }
                     }
-                  }
-                  
-                  return (
-                    <div key={symbol} className={`p-3 rounded-lg ${hasPosition ? 'bg-slate-700' : 'bg-slate-700/30'}`}>
-                      <div className="flex justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: config.color }}></div>
-                            <span className="font-bold">{symbol}</span>
-                            <span className="text-xs text-slate-400">{config.sector}</span>
+                    
+                    return (
+                      <div key={symbol} className={`p-2 rounded text-xs ${hasPosition ? 'bg-slate-700' : 'bg-slate-700/30'}`}>
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-2 flex-1">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: assets[symbol].color }}></div>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold">{symbol}</span>
+                                <span className="text-slate-400">${formatPrice(price, marketType)}</span>
+                              </div>
+                              {hasPosition && (
+                                <div className="text-[10px] text-slate-400 mt-0.5">
+                                  {assets[symbol].name}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-sm text-slate-400">
+                          <div className="text-right">
                             {shares > 0 && (
-                              <div className="text-green-400">
-                                LONG: {shares} @ £{entryPrice?.toFixed(2) || '0'} 
-                                <span className={pnlPercent >= 0 ? 'text-green-300' : 'text-red-300'}>
-                                  ({pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}%)
-                                </span>
+                              <div>
+                                <div className="text-green-400 font-semibold">
+                                  LONG {shares}
+                                </div>
+                                <div className={`text-xs ${pnlPercent >= 0 ? 'text-green-300' : 'text-red-300'}`}>
+                                  {pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}% · ${positionValue.toFixed(0)}
+                                </div>
+                                {stopLoss && takeProfit && (
+                                  <div className="text-[10px] text-slate-400">
+                                    SL:{stopLoss.toFixed(1)}% TP:{takeProfit.toFixed(1)}%
+                                  </div>
+                                )}
                               </div>
                             )}
                             {shorts > 0 && (
-                              <div className="text-red-400">
-                                SHORT: {shorts} @ £{entryPrice?.toFixed(2) || '0'}
-                                <span className={pnlPercent >= 0 ? 'text-green-300' : 'text-red-300'}>
-                                  ({pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}%)
-                                </span>
+                              <div>
+                                <div className="text-red-400 font-semibold">
+                                  SHORT {shorts}
+                                </div>
+                                <div className={`text-xs ${pnlPercent >= 0 ? 'text-green-300' : 'text-red-300'}`}>
+                                  {pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}% · ${positionValue.toFixed(0)}
+                                </div>
+                                {stopLoss && takeProfit && (
+                                  <div className="text-[10px] text-slate-400">
+                                    SL:{stopLoss.toFixed(1)}% TP:{takeProfit.toFixed(1)}%
+                                  </div>
+                                )}
                               </div>
                             )}
-                            {!hasPosition && 'No position'}
-                          </div>
-                        </div>
-                        {hasPosition && price && (
-                          <div className="text-right">
-                            {shares > 0 && <div className="font-bold text-green-400">£{(shares * price).toFixed(2)}</div>}
-                            {shorts > 0 && <div className="font-bold text-red-400">-£{(shorts * price).toFixed(2)}</div>}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="bg-slate-800 rounded-lg">
-            <button onClick={() => toggleSection('trades')} className="w-full px-6 py-3 flex justify-between items-center hover:bg-slate-700 rounded-t-lg">
-              <span className="font-bold text-lg">Recent Trades ({completedTradesRef.current.length})</span>
-              {expandedSection === 'trades' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-            </button>
-            {expandedSection === 'trades' && (
-              <div className="p-6 space-y-2 max-h-96 overflow-y-auto border-t border-slate-700">
-                {completedTradesRef.current.length === 0 ? (
-                  <div className="text-slate-400 text-center py-8">No completed trades yet</div>
-                ) : (
-                  completedTradesRef.current.slice().reverse().map((trade, idx) => (
-                    <div key={idx} className="p-3 bg-slate-700 rounded-lg text-sm">
-                      <div className="flex justify-between items-start">
-                        <div className="flex items-start gap-2 flex-1">
-                          {trade.pnl >= 0 ? <TrendingUp className="text-green-400 mt-0.5" size={16} /> : <TrendingDown className="text-red-400 mt-0.5" size={16} />}
-                          <div>
-                            <div className="font-bold">{trade.symbol}</div>
-                            <div className="text-xs text-slate-400">{trade.reason}</div>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className={trade.pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
-                            {trade.pnl >= 0 ? '+' : ''}£{trade.pnl.toFixed(2)}
-                          </div>
-                          <div className="text-xs text-slate-400">
-                            ({trade.pnlPercent >= 0 ? '+' : ''}{trade.pnlPercent.toFixed(2)}%)
+                            {!hasPosition && <span className="text-slate-500">—</span>}
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ))
-                )}
+                    );
+                  })}
+                </div>
               </div>
-            )}
-          </div>
+            );
+          })}
         </div>
-        
+
+        {/* Modals */}
         {showProfileModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-slate-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="bg-slate-800 rounded-lg p-6 max-w-2xl w-full">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Trading Profiles</h2>
                 <button onClick={() => setShowProfileModal(false)} className="text-slate-400 hover:text-white text-2xl">×</button>
@@ -1317,41 +1289,25 @@ const QuantTradingSimulator = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <button onClick={() => applyProfile('conservative')} className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left">
                   <div className="font-bold text-green-400 text-lg mb-2">🛡️ Conservative</div>
-                  <div className="text-sm text-slate-300">Risk: 60% | Speed: 500ms | Stop: 7% | Take: 12% (Auto)</div>
+                  <div className="text-sm text-slate-300">Risk: 75% | Invest: 10% | 1ns | SL: 4% | TP: 16% (Auto)</div>
                 </button>
                 <button onClick={() => applyProfile('balanced')} className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left">
                   <div className="font-bold text-blue-400 text-lg mb-2">⚖️ Balanced</div>
-                  <div className="text-sm text-slate-300">Risk: 65% | Speed: 100ms | Stop: 4% | Take: 15% (Auto)</div>
+                  <div className="text-sm text-slate-300">Risk: 78% | Invest: 18% | 1ns | SL: 2.5% | TP: 20% (Auto)</div>
                 </button>
                 <button onClick={() => applyProfile('aggressive')} className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left">
                   <div className="font-bold text-orange-400 text-lg mb-2">🔥 Aggressive</div>
-                  <div className="text-sm text-slate-300">Risk: 75% | Speed: 20ms | Stop: 3% | Take: 20% (Auto)</div>
-                </button>
-                <button onClick={() => applyProfile('hft')} className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left">
-                  <div className="font-bold text-yellow-400 text-lg mb-2">⚡ HFT Algo</div>
-                  <div className="text-sm text-slate-300">Risk: 85% | Speed: 1ns ⚡ | Stop: 3% | Take: 8% (Manual)</div>
-                </button>
-                <button onClick={() => applyProfile('daytrader')} className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left">
-                  <div className="font-bold text-purple-400 text-lg mb-2">📊 Day Trader</div>
-                  <div className="text-sm text-slate-300">Risk: 75% | Speed: 50ms | Stop: 4% | Take: 12% (Auto)</div>
+                  <div className="text-sm text-slate-300">Risk: 82% | Invest: 28% | 1ns | SL: 2% | TP: 25% (Auto)</div>
                 </button>
                 <button onClick={() => applyProfile('scalper')} className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left">
                   <div className="font-bold text-red-400 text-lg mb-2">💨 Scalper</div>
-                  <div className="text-sm text-slate-300">Risk: 90% | Speed: 1ns ⚡ | Stop: 2% | Take: 5% (Manual)</div>
-                </button>
-                <button onClick={() => applyProfile('swingtrader')} className="p-4 bg-slate-700 hover:bg-slate-600 rounded-lg text-left">
-                  <div className="font-bold text-cyan-400 text-lg mb-2">🌊 Swing Trader</div>
-                  <div className="text-sm text-slate-300">Risk: 65% | Speed: 1000ms | Stop: 8% | Take: 25% (Auto)</div>
-                </button>
-                <button onClick={() => applyProfile('whale')} className="p-4 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-lg text-left">
-                  <div className="font-bold text-white text-lg mb-2">🐋 Whale Mode</div>
-                  <div className="text-sm text-white">Risk: 75% | Speed: 10ms | Capital: £100M | Auto TP</div>
+                  <div className="text-sm text-slate-300">Risk: 88% | Invest: 22% | 1ns | SL: 1.5% | TP: 12% (Manual)</div>
                 </button>
               </div>
             </div>
           </div>
         )}
-        
+
         {showCapitalModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-slate-800 rounded-lg p-6 max-w-md w-full">
@@ -1361,48 +1317,38 @@ const QuantTradingSimulator = () => {
                   <label className="text-sm text-slate-400 block mb-2">
                     Amount: {formatCurrency(startingCapital)}
                   </label>
-                  <input type="number" min="1000" max="1000000000" step="1000" value={startingCapital} onChange={(e) => setStartingCapital(Math.max(1000, Number(e.target.value)))} className="w-full px-4 py-2 bg-slate-700 rounded text-white" />
+                  <input 
+                    type="number" 
+                    min="10000" 
+                    max="10000000" 
+                    step="10000" 
+                    value={startingCapital} 
+                    onChange={(e) => setStartingCapital(Math.max(10000, Number(e.target.value)))} 
+                    className="w-full px-4 py-2 bg-slate-700 rounded text-white" 
+                  />
                 </div>
                 <div className="grid grid-cols-3 gap-2">
-                  <button onClick={() => setStartingCapital(10000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£10k</button>
-                  <button onClick={() => setStartingCapital(100000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£100k</button>
-                  <button onClick={() => setStartingCapital(1000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£1M</button>
-                  <button onClick={() => setStartingCapital(10000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£10M</button>
-                  <button onClick={() => setStartingCapital(100000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">£100M</button>
+                  <button onClick={() => setStartingCapital(50000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">$50k</button>
+                  <button onClick={() => setStartingCapital(100000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">$100k</button>
+                  <button onClick={() => setStartingCapital(500000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">$500k</button>
+                  <button onClick={() => setStartingCapital(1000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">$1M</button>
+                  <button onClick={() => setStartingCapital(5000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">$5M</button>
+                  <button onClick={() => setStartingCapital(10000000)} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">$10M</button>
                 </div>
                 <div className="flex gap-3 mt-4">
-                  <button onClick={() => { setShowCapitalModal(false); initializeMarket(); }} className="flex-1 px-6 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold">
+                  <button 
+                    onClick={() => { setShowCapitalModal(false); initializeMarkets(); }} 
+                    className="flex-1 px-6 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold"
+                  >
                     Apply & Reset
                   </button>
-                  <button onClick={() => setShowCapitalModal(false)} className="px-6 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg font-semibold">
+                  <button 
+                    onClick={() => setShowCapitalModal(false)} 
+                    className="px-6 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg font-semibold"
+                  >
                     Cancel
                   </button>
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {showWatchlistModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-slate-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold">Select Stocks for Watchlist</h2>
-                <button onClick={() => setShowWatchlistModal(false)} className="text-slate-400 hover:text-white text-2xl">×</button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {Object.keys(STOCKS).map(symbol => (
-                  <button key={symbol} onClick={() => toggleWatchlist(symbol)} className={`p-3 rounded-lg text-left ${watchlist.includes(symbol) ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-700 hover:bg-slate-600'}`}>
-                    <div className="font-bold">{symbol}</div>
-                    <div className="text-sm text-slate-300">{STOCKS[symbol].name}</div>
-                  </button>
-                ))}
-              </div>
-              <div className="mt-4 flex justify-between items-center">
-                <div className="text-sm text-slate-400">{watchlist.length} stocks selected</div>
-                <button onClick={() => setShowWatchlistModal(false)} className="px-6 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold">
-                  Done
-                </button>
               </div>
             </div>
           </div>
@@ -1412,4 +1358,4 @@ const QuantTradingSimulator = () => {
   );
 };
 
-export default QuantTradingSimulator;
+export default MultiMarketTradingSimulator;
